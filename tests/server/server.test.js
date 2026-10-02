@@ -96,6 +96,17 @@ test('static assets are served with correct content types', async () => {
   assert.match(js.headers['content-type'], /javascript/);
 });
 
+test('index.html carries asset versions stamped from file mtimes', async () => {
+  const res = await rawRequest('/index.html');
+  assert.equal(res.status, 200);
+  const cssVer = res.body.match(/\/css\/style\.css\?v=([^"' ]+)/)?.[1];
+  const jsVer = res.body.match(/\/js\/app\.js\?v=([^"' ]+)/)?.[1];
+  assert.ok(cssVer, 'style.css link must carry a ?v= version');
+  assert.ok(jsVer, 'app.js script must carry a ?v= version');
+  assert.notEqual(cssVer, '1', 'placeholder ?v=1 must be replaced with a real mtime');
+  assert.ok(Number.isFinite(Number(jsVer)), 'version must be numeric (mtime)');
+});
+
 test('unknown API route returns JSON 404', async () => {
   const res = await rawRequest('/api/does-not-exist');
   assert.equal(res.status, 404);

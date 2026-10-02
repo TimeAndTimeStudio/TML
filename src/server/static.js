@@ -57,8 +57,20 @@ async function sendFile(req, res, file) {
 
   res.statusCode = 200;
   res.setHeader('Content-Type', contentTypeFor(file));
-  res.setHeader('Content-Length', stat.size);
   res.setHeader('Cache-Control', cacheControlFor(file));
+
+  // html: เขียน ?v= ของ style.css/app.js ใหม่จาก mtime ไฟล์จริงทุกครั้งที่เสิร์ฟ
+  // → browser reload ธรรมดา (ไม่ต้อง hard refresh) ก็ได้ CSS/JS ปัจจุบันเสมอ
+  if (path.extname(file).toLowerCase() === '.html') {
+    const html = await fsp.readFile(file, 'utf8');
+    const body = Buffer.from(await stampAssetVersions(path.dirname(file), html));
+    res.setHeader('Content-Length', body.length);
+    if (req.method === 'HEAD') return void res.end();
+    res.end(body);
+    return;
+  }
+
+  res.setHeader('Content-Length', stat.size);
 
   if (req.method === 'HEAD') {
     res.end();
@@ -72,6 +84,19 @@ async function sendFile(req, res, file) {
     stream.on('end', resolve);
     stream.pipe(res);
   });
+}
+
+async function stampAssetVersions(dir, html) {
+  const assets = [
+    { re: /(\/css\/style\.css)\?v=[^"' ]*/g, file: path.join(dir, 'css', 'style.css') },
+    { re: /(\/js\/app\.js)\?v=[^"' ]*/g, file: path.join(dir, 'js', 'app.js') },
+  ];
+  let out = html;
+  for (const { re, file } of assets) {
+    const stat = await statFile(file);
+    if (stat) out = out.replace(re, `$1?v=${Math.floor(stat.mtimeMs)}`);
+  }
+  return out;
 }
 
 export async function serveStatic({ req, res, pathname, webDir }) {
