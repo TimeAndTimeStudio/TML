@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>TML — Time Mini Launcher</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <!-- ?v= คือ cache-bust — bump ทุกครั้งที่แก้ style.css / app.js (server ตัด query ออกก่อนหาไฟล์) -->
+  <link rel="stylesheet" href="/css/style.css?v=1" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"><img src="/favicon.svg" alt="" width="34" height="34" /></span>
+        <span class="brand-name">TML <small>Time Mini Launcher</small></span>
+      </div>
+      <div class="topbar-right">
+        <button class="btn btn-ghost" id="authBtn" type="button">SIGN IN</button>
+        <span class="pill pill-muted" id="accountPill" hidden>—</span>
+        <button class="btn btn-ghost btn-small" id="skinOpenBtn" type="button" hidden>SKIN</button>
+        <span class="pill" id="statusPill" data-state="checking">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="statusText">Connecting…</span>
+        </span>
+        <span class="pill pill-muted" id="versionPill">v—</span>
+      </div>
+    </header>
+
+    <div class="shell">
+      <nav class="sidebar" aria-label="Main navigation">
+        <p class="sidebar-label">Launcher</p>
+        <button class="nav-item is-active" type="button" data-view="instances">
+          <span class="nav-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="12.4" height="12.4" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="5" y="5" width="6" height="6" fill="currentColor"/></svg></span> Instances
+        </button>
+        <button class="nav-item" type="button" data-view="versions">
+          <span class="nav-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span> Versions
+        </button>
+        <button class="nav-item" type="button" data-view="settings">
+          <span class="nav-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.1" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.6v2.2M8 12.2v2.2M1.6 8h2.2M12.2 8h2.2M3.5 3.5l1.6 1.6M10.9 10.9l1.6 1.6M12.5 3.5l-1.6 1.6M5.1 10.9l-1.6 1.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span> Settings
+        </button>
+        <button class="nav-item" type="button" id="accountsNavBtn">
+          <span class="nav-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.8a6.2 6.2 0 0 0 0 12.4Z" fill="currentColor"/></svg></span> Accounts
+        </button>
+      </nav>
+
+      <main class="main">
+        <section class="view is-active" id="view-instances" data-view-panel="instances">
+          <div class="view-head view-head-row">
+            <div>
+              <h1>Instances</h1>
+            </div>
+            <div class="view-head-actions">
+              <button class="btn" id="createInstanceBtn" type="button">Create Instance</button>
+              <button class="btn btn-primary" id="importInstanceBtn" type="button">Import Instance</button>
+            </div>
+          </div>
+
+          <div class="instance-grid" id="instancesGrid" hidden></div>
+
+          <div class="empty-state card" id="instancesEmpty">
+            <div class="empty-glyph" aria-hidden="true"><svg width="40" height="40" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="12.4" height="12.4" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="5" y="5" width="6" height="6" fill="currentColor"/></svg></div>
+            <h2>No instances yet</h2>
+            <p class="muted">Create a fresh instance or import a <code>.zip</code> you exported earlier.</p>
+            <div class="empty-actions">
+              <button class="btn btn-primary" type="button" data-open-create>Create Instance</button>
+              <button class="btn" type="button" data-open-import>Import Instance</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-instance" data-view-panel="instance" hidden>
+          <div class="view-head view-head-row">
+            <div>
+              <button class="link-back" id="instanceBackBtn" type="button"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8H3.5M7.5 4 3.5 8l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> Instances</button>
+              <h1 id="instanceTitle">Instance</h1>
+              <p class="muted" id="instanceSubtitle">—</p>
+            </div>
+            <div class="view-head-actions">
+              <button class="btn btn-primary" id="iPlayBtn" type="button">PLAY</button>
+              <button class="btn" id="iModsBtn" type="button">MODS</button>
+              <button class="btn" id="iPacksBtn" type="button">PACKS</button>
+              <button class="btn" id="iSettingsBtn" type="button">SETTINGS</button>
+              <button class="btn" id="iExportBtn" type="button">EXPORT</button>
+              <button class="btn btn-danger" id="iDeleteBtn" type="button">DELETE</button>
+            </div>
+          </div>
+
+          <div class="card" id="instancePanelOverview">
+            <h3>Overview</h3>
+            <dl class="facts" id="instanceFacts"></dl>
+          </div>
+
+          <div class="card" id="instancePanelMods" hidden>
+            <h3>Mods <span class="pill pill-muted" id="modCountPill">—</span></h3>
+            <div class="mod-list" id="modList"><p class="muted">Loading mods…</p></div>
+
+            <div class="mod-search-block">
+              <h4>Modrinth — popular mods &amp; search</h4>
+              <form class="mod-install" id="modSearchForm">
+                <input type="search" id="modSearchInput" spellcheck="false"
+                  placeholder="e.g. sodium, iris, create-fabric — leave empty for popular mods" />
+                <button class="btn" type="submit">SEARCH</button>
+              </form>
+              <p class="muted small import-error" id="modSearchError" hidden></p>
+              <div class="mod-results" id="modResults" hidden></div>
+            </div>
+          </div>
+
+          <div class="card" id="instancePanelPacks" hidden>
+            <h3>Packs <span class="pill pill-muted" id="packCountPill">—</span></h3>
+
+            <div class="pack-section">
+              <h4>Resource packs <span class="pill pill-muted" id="rpCountPill">0</span></h4>
+              <div class="mod-list" id="rpList"><p class="muted">No resource packs installed in this instance.</p></div>
+            </div>
+
+            <div class="pack-section">
+              <h4>Shaders <span class="pill pill-muted" id="spCountPill">0</span></h4>
+              <div class="mod-list" id="spList"><p class="muted">No shaders installed in this instance.</p></div>
+            </div>
+
+            <div class="mod-search-block">
+              <h4>Modrinth — search resource packs / shaders</h4>
+              <form class="mod-install pack-search" id="packSearchForm">
+                <div class="dropdown pack-type-dropdown" id="packTypeDropdown">
+                  <button type="button" class="dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="dropdown-value">resourcepack</span>
+                  </button>
+                  <div class="dropdown-menu" hidden>
+                    <ul class="dropdown-list" role="listbox"></ul>
+                    <p class="dropdown-empty muted small">No entries</p>
+                  </div>
+                </div>
+                <input type="search" id="packSearchInput" spellcheck="false"
+                  placeholder="e.g. faithful, BSL — leave empty for popular" />
+                <button class="btn btn-primary" type="submit">SEARCH</button>
+                <input type="hidden" id="packType" value="resourcepack" />
+              </form>
+              <p class="muted small import-error" id="packSearchError" hidden></p>
+              <div class="mod-results" id="packResults" hidden></div>
+            </div>
+          </div>
+
+          <div class="card" id="instancePanelSettings" hidden>
+            <h3>Settings</h3>
+            <form id="instanceSettingsForm">
+              <label class="field">
+                <span class="field-label">Name</span>
+                <input type="text" id="isName" maxlength="80" required spellcheck="false" />
+              </label>
+              <div class="grid grid-2">
+                <label class="field">
+                  <span class="field-label">Memory min</span>
+                  <input type="text" id="isMemMin" spellcheck="false" placeholder="512M" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Memory max</span>
+                  <input type="text" id="isMemMax" spellcheck="false" placeholder="4096M" />
+                </label>
+              </div>
+              <label class="field">
+                <span class="field-label">Extra JVM arguments</span>
+                <input type="text" id="isJvmArgs" spellcheck="false"
+                  placeholder="-XX:+UseG1GC -Dfoo=bar" />
+              </label>
+              <p class="muted small">Space separated; wrap values that contain spaces in quotes.</p>
+              <table class="table">
+                <tbody>
+                  <tr><th>Instance id</th><td id="isId">—</td></tr>
+                  <tr><th>Minecraft</th><td id="isMc">—</td></tr>
+                  <tr><th>Loader</th><td id="isLoader">—</td></tr>
+                  <tr><th>Java</th><td id="isJava">—</td></tr>
+                </tbody>
+              </table>
+              <button class="btn btn-primary" type="submit">SAVE</button>
+            </form>
+            <p class="muted small import-error" id="instanceSettingsError" hidden></p>
+          </div>
+        </section>
+
+        <section class="view" id="view-versions" data-view-panel="versions" hidden>
+          <div class="view-head">
+            <h1>Minecraft Versions</h1>
+          </div>
+
+          <div class="card versions-card">
+            <div class="versions-toolbar">
+              <div class="segmented" id="versionFilters">
+                <button class="seg is-active" type="button" data-type="all">All</button>
+                <button class="seg" type="button" data-type="release">Release</button>
+                <button class="seg" type="button" data-type="snapshot">Snapshot</button>
+                <button class="seg" type="button" data-type="old_beta">Old Beta</button>
+                <button class="seg" type="button" data-type="old_alpha">Old Alpha</button>
+              </div>
+              <button class="btn btn-ghost" id="versionRefresh" type="button">REFRESH</button>
+              <span class="pill pill-muted" id="versionCount">— versions</span>
+            </div>
+
+            <div class="versions-body">
+              <div class="versions-list" id="versionsList">
+                <p class="muted">Loading versions…</p>
+              </div>
+              <aside class="version-detail" id="versionDetail">
+                <p class="muted">Select a version to view its metadata</p>
+              </aside>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-settings" data-view-panel="settings" hidden>
+          <div class="view-head">
+            <h1>Settings</h1>
+          </div>
+
+          <div class="card">
+            <h3>Launcher</h3>
+            <table class="table" id="configTable">
+              <tbody>
+                <tr><th>Version</th><td data-config="version">—</td></tr>
+                <tr><th>Data directory</th><td data-config="dataDir">—</td></tr>
+                <tr><th>Instances directory</th><td data-config="instancesDir">—</td></tr>
+                <tr><th>Cache directory</th><td data-config="cacheDir">—</td></tr>
+                <tr><th>Java runtime</th><td data-config="javaRuntime">—</td></tr>
+              </tbody>
+            </table>
+
+            <form id="serverConfigForm">
+              <div class="grid grid-2">
+                <label class="field">
+                  <span class="field-label">Host</span>
+                  <input type="text" id="cfgHost" spellcheck="false" required placeholder="127.0.0.1" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Port</span>
+                  <input type="text" id="cfgPort" inputmode="numeric" required />
+                </label>
+              </div>
+              <div class="field">
+                <span class="field-label">Log level</span>
+                <div class="dropdown" id="cfgLogLevelDropdown">
+                  <button type="button" class="dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="dropdown-value">info</span>
+                  </button>
+                  <div class="dropdown-menu" hidden>
+                    <ul class="dropdown-list" role="listbox"></ul>
+                    <p class="dropdown-empty muted small">No entries</p>
+                  </div>
+                </div>
+                <input type="hidden" id="cfgLogLevel" value="info" />
+              </div>
+              <div class="field">
+                <span class="field-label">Game window platform</span>
+                <div class="dropdown" id="cfgWindowDropdown">
+                  <button type="button" class="dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="dropdown-value">System (auto)</span>
+                  </button>
+                  <div class="dropdown-menu" hidden>
+                    <ul class="dropdown-list" role="listbox"></ul>
+                    <p class="dropdown-empty muted small">No entries</p>
+                  </div>
+                </div>
+                <input type="hidden" id="cfgWindow" value="auto" />
+                <p class="muted small" id="cfgWindowHelp">
+                  Applies from the next PLAY.
+                  <strong>System (auto)</strong> runs the game native on Wayland — sharp at fractional
+                  scaling, but GNOME/mutter never draws decorations for Wayland windows
+                  (no xdg-decoration support), so the title bar over the game is drawn by the game
+                  itself (libdecor): its buttons and theme do not match GNOME and there is no
+                  system window menu. <strong>X11 / XWayland</strong> forces the game through
+                  XWayland so GNOME draws its own title bar, buttons and window icon with the
+                  system theme — recommended for windowed play (slightly blurrier with fractional
+                  scaling).
+                </p>
+              </div>
+              <button class="btn btn-primary" type="submit">SAVE</button>
+            </form>
+            <p class="muted small import-error" id="serverConfigError" hidden></p>
+          </div>
+
+          <div class="grid grid-2">
+            <div class="card">
+              <h3>Java Runtime <span class="pill pill-muted" id="javaRtPill">—</span></h3>
+              <p class="muted small">
+                Microsoft Java runtimes for Linux — PLAY uses the selected downloaded version.
+              </p>
+              <div class="dropdown" id="javaRtDropdown">
+                <button type="button" class="dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">
+                  <span class="dropdown-value">—</span>
+                </button>
+                <div class="dropdown-menu" hidden>
+                  <ul class="dropdown-list" role="listbox"></ul>
+                  <p class="dropdown-empty muted small">Loading list…</p>
+                </div>
+              </div>
+              <input type="hidden" id="javaRtValue" value="" />
+              <table class="table">
+                <tbody>
+                  <tr><th>Java</th><td id="javaRtVersion">—</td></tr>
+                  <tr><th>Released</th><td id="javaRtReleased">—</td></tr>
+                  <tr><th>Status</th><td id="javaRtState">—</td></tr>
+                </tbody>
+              </table>
+              <div class="java-card-actions">
+                <button class="btn btn-primary" id="javaRtActionBtn" type="button">NOT SELECTED</button>
+                <button class="btn btn-danger" id="javaRtDeleteBtn" type="button" hidden>DELETE</button>
+              </div>
+              <p class="muted small import-error" id="javaRtError" hidden></p>
+            </div>
+            <div class="card">
+              <h3>Accounts</h3>
+              <p class="muted">Sign in with a Microsoft account from the topbar.</p>
+              <form id="offlineNameForm">
+                <label class="field">
+                  <span class="field-label">Offline name</span>
+                  <input type="text" id="cfgOfflineName" maxlength="16" spellcheck="false" autocomplete="off" placeholder="Player" />
+                </label>
+                <p class="muted small">Used while signed out — 3–16 characters (a–z, A–Z, 0–9, _). Hidden once you sign in.</p>
+                <button class="btn btn-primary" type="submit">SAVE</button>
+              </form>
+              <p class="muted small import-error" id="offlineNameError" hidden></p>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Server</h3>
+            <dl class="facts" id="serverFacts">
+              <div><dt>Endpoint</dt><dd id="factEndpoint">—</dd></div>
+              <div><dt>Uptime</dt><dd id="factUptime">—</dd></div>
+              <div><dt>Node</dt><dd id="factNode">—</dd></div>
+              <div><dt>Platform</dt><dd id="factPlatform">—</dd></div>
+            </dl>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div class="launch-overlay" id="launchOverlay" hidden>
+    <div class="launch-box" role="status" aria-live="polite">
+      <p class="launch-title" id="launchTitle">Launching…</p>
+      <p class="launch-stage" id="launchStage">Preparing…</p>
+      <div class="progress-track" id="launchTrack">
+        <div class="progress-fill" id="launchProgressFill"></div>
+      </div>
+      <p class="launch-meta"><span id="launchPercent">—</span></p>
+    </div>
+  </div>
+
+  <div class="launch-overlay" id="javaOverlay" hidden>
+    <div class="launch-box" role="status" aria-live="polite">
+      <p class="launch-title" id="javaOverlayTitle">Downloading Java runtime…</p>
+      <p class="launch-stage" id="javaOverlayStage">Preparing…</p>
+      <div class="progress-track">
+        <div class="progress-fill" id="javaOverlayFill"></div>
+      </div>
+      <p class="launch-meta"><span id="javaOverlayPercent">—</span></p>
+    </div>
+  </div>
+
+  <div class="toast-host" id="toastHost" aria-live="polite"></div>
+
+  <div class="modal-backdrop" id="importModal" hidden>
+    <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="importTitle">
+      <h2 id="importTitle">Import Instance</h2>
+
+      <div id="importStep1">
+        <p class="muted">Select a <code>.zip</code> exported from TML.</p>
+        <p class="wizard-path"><span class="is-active">Select .zip</span><span class="wizard-arrow"><svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Validate</span><span class="wizard-arrow"><svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Instance Name</span><span class="wizard-arrow"><svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Import</span></p>
+        <input type="file" id="importFile" accept=".zip,application/zip" />
+        <p class="muted small import-error" id="importError" hidden></p>
+      </div>
+
+      <div id="importStep2" hidden>
+        <p class="wizard-path"><span class="is-done">Select .zip</span><span class="wizard-arrow"><svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="is-active">Validate</span><span class="wizard-arrow"><svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Instance Name</span><span class="wizard-arrow"><svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Import</span></p>
+        <div class="import-summary card-inner" id="importSummary"></div>
+        <label class="field">
+          <span class="field-label">Instance Name</span>
+          <input type="text" id="importName" maxlength="80" spellcheck="false" />
+        </label>
+      </div>
+
+      <div id="importStep3" hidden>
+        <div class="import-done">
+          <div class="empty-glyph" aria-hidden="true"><svg width="40" height="40" viewBox="0 0 16 16"><path d="M2.5 8.5 6.5 12.5 13.5 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          <h3>Import complete</h3>
+          <p class="import-done-name" id="importDoneName">—</p>
+          <p class="muted" id="importDoneMeta">—</p>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn" id="importCancelBtn" type="button">CANCEL</button>
+        <button class="btn" id="importBrowseBtn" type="button" hidden>SELECT ANOTHER</button>
+        <button class="btn btn-primary" id="importConfirmBtn" type="button" hidden>IMPORT</button>
+        <button class="btn btn-primary" id="importDoneBtn" type="button" hidden>DONE</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="exportModal" hidden>
+    <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="exportTitle">
+      <h2 id="exportTitle">Export Instance</h2>
+      <p class="muted small" id="exportSubtitle">—</p>
+      <form id="exportForm">
+        <label class="field">
+          <span class="field-label">Folder path</span>
+          <input type="text" id="exportPath" spellcheck="false" placeholder="/home/you/exports" required />
+        </label>
+        <label class="field">
+          <span class="field-label">File name</span>
+          <input type="text" id="exportName" maxlength="150" spellcheck="false" required />
+        </label>
+        <p class="muted small">Saved as <code id="exportPreview">—</code></p>
+        <p class="muted small import-error" id="exportError" hidden></p>
+        <div class="modal-actions">
+          <button class="btn" id="exportCancelBtn" type="button">CANCEL</button>
+          <button class="btn btn-primary" type="submit">EXPORT</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="createModal" hidden>
+    <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="createTitle">
+      <h2 id="createTitle">Create Instance</h2>
+      <form id="createForm">
+        <label class="field">
+          <span class="field-label">Name</span>
+          <input type="text" id="createName" maxlength="80" placeholder="My Pack" required spellcheck="false" />
+        </label>
+        <div class="field">
+          <span class="field-label">Minecraft version</span>
+          <div class="dropdown" id="createMcDropdown">
+            <button type="button" class="dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">
+              <span class="dropdown-value">1.20.1</span>
+            </button>
+            <div class="dropdown-menu" hidden>
+              <input type="search" class="dropdown-filter" placeholder="Type to filter…" spellcheck="false" />
+              <ul class="dropdown-list" role="listbox"></ul>
+              <p class="dropdown-empty muted small">Loading list…</p>
+            </div>
+          </div>
+          <input type="hidden" id="createMc" value="1.20.1" />
+        </div>
+        <div class="field">
+          <span class="field-label">Fabric loader version</span>
+          <div class="dropdown" id="createFabricDropdown">
+            <button type="button" class="dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">
+              <span class="dropdown-value">0.15.7</span>
+            </button>
+            <div class="dropdown-menu" hidden>
+              <ul class="dropdown-list" role="listbox"></ul>
+              <p class="dropdown-empty muted small">Loading list…</p>
+            </div>
+          </div>
+          <input type="hidden" id="createFabric" value="0.15.7" />
+        </div>
+        <p class="muted small import-error" id="createError" hidden></p>
+        <div class="modal-actions">
+          <button class="btn" id="createCancelBtn" type="button">CANCEL</button>
+          <button class="btn btn-primary" type="submit">CREATE</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="authModal" hidden>
+    <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <h2 id="authTitle">Microsoft Account</h2>
+
+      <div id="authSignedOut" hidden>
+
+        <!-- LIVE FLOW — ตัวเลือกวิธี sign in: ลบบล็อกนี้พร้อม src/auth/live.js -->
+        <div class="field" id="authFlowField">
+          <span class="field-label">Sign-in method</span>
+          <div class="auth-flow-picker" id="authFlowPicker">
+            <button type="button" class="btn flow-option" data-flow="aad">Standard</button>
+            <button type="button" class="btn flow-option" data-flow="live">Instant</button>
+          </div>
+          <p class="muted small" id="authFlowHint"></p>
+        </div>
+        <!-- /LIVE FLOW -->
+
+        <div id="authCodeStep" hidden>
+          <div class="auth-code" id="authUserCode">————</div>
+          <p class="muted">
+            Open <a id="authLink" href="https://microsoft.com/link" target="_blank" rel="noopener noreferrer">microsoft.com/link</a>
+            and enter this code
+          </p>
+          <p class="small muted" id="authMessage"></p>
+          <p class="small auth-waiting" id="authWaiting" hidden>Waiting for approval…</p>
+        </div>
+
+        <p class="muted small import-error" id="authError" hidden></p>
+
+        <div class="modal-actions">
+          <button class="btn" id="authCancelBtn" type="button">CANCEL</button>
+          <button class="btn btn-primary" id="authStartBtn" type="button">START SIGN IN</button>
+        </div>
+      </div>
+
+      <div id="authSignedIn" hidden>
+        <dl class="facts" id="authFacts"></dl>
+        <p class="muted small import-error" id="authSessionError" hidden></p>
+
+        <p class="muted small">Change your skin from the <strong>SKIN</strong> button next to your name in the topbar.</p>
+
+        <div class="modal-actions">
+          <button class="btn" id="authCloseBtn" type="button">CLOSE</button>
+          <button class="btn" id="authRefreshBtn" type="button">REFRESH TOKEN</button>
+          <button class="btn btn-danger" id="authSignOutBtn" type="button">SIGN OUT</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="skinOverlay" hidden>
+    <div class="modal card skin-overlay" role="dialog" aria-modal="true" aria-labelledby="skinOverlayTitle">
+      <h2 id="skinOverlayTitle">Skin</h2>
+      <p class="muted small" id="skinOverlayMeta">Loading the skin in use…</p>
+      <canvas id="skinOverlayCanvas" width="440" height="400"></canvas>
+
+      <div class="skin-file-row">
+        <button class="btn" id="skinChooseBtn" type="button">CHOOSE FILE</button>
+        <span class="muted small" id="skinFileName">No file chosen</span>
+        <input type="file" id="skinOverlayFile" accept="image/png,.png" hidden />
+      </div>
+
+      <div class="field">
+          <span class="field-label">Model</span>
+        <div class="dropdown" id="skinVariantDropdown">
+          <button type="button" class="dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">
+            <span class="dropdown-value">Classic (wide arms)</span>
+          </button>
+          <div class="dropdown-menu" hidden>
+            <ul class="dropdown-list" role="listbox"></ul>
+            <p class="dropdown-empty muted small">No entries</p>
+          </div>
+        </div>
+        <input type="hidden" id="skinVariantValue" value="classic" />
+      </div>
+
+      <p class="muted small import-error" id="skinError" hidden></p>
+
+      <div class="modal-actions">
+        <button class="btn" id="skinOverlayClose" type="button">CLOSE</button>
+        <button class="btn btn-danger" id="skinResetBtn" type="button">RESET TO DEFAULT</button>
+        <button class="btn btn-primary" id="skinUploadBtn" type="button">UPLOAD SKIN</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/js/app.js?v=1"></script>
+</body>
+</html>

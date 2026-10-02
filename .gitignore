@@ -1,0 +1,10 @@
+# runtime data ของผู้ใช้ — มี auth-session.json (token) ห้ามเข้า git เด็ดขาด
+tml-data/
+
+node_modules/
+*.tgz
+
+# skin ที่หลุดมาวางใน root (ไฟล์ hash ชื่อ 40 ตัวอักษร) ห้าม commit
+/*.png
+
+.DS_Store
