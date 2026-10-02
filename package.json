@@ -1,6 +1,6 @@
 {
   "name": "tml-launcher",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TML — Time Mini Launcher, a self-contained Minecraft: Java Edition launcher for Linux (Node.js built-ins only)",
   "type": "module",
   "main": "src/index.js",
