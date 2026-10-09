@@ -3,6 +3,7 @@
 // License: GPL-3.0-or-later
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigError } from './errors.js';
@@ -17,6 +18,102 @@ const DEFAULTS = {
   port: 8620,
   logLevel: 'warn',
 };
+
+const DEFAULT_DATA_DIR = path.join(os.homedir(), '.tml-launcher');
+// pointer อยู่นอก data dir เอง — ย้าย data dir แล้วไฟล์นี้ยังชี้ตามไปด้วย (อ่านตอน start รอบถัดไป)
+export const DATA_DIR_POINTER_FILE = path.join(os.homedir(), '.tml-launcher.json');
+
+// อ่าน data dir ที่ตั้งไว้จาก UI — { dataDir, from } หรือ null
+// from = กด MOVE แล้วยังไม่ restart → ย้ายข้อมูลจริงตอน start รอบถัดไป
+export function readDataDirPointerEntry(pointerFile = DATA_DIR_POINTER_FILE) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(pointerFile, 'utf8'));
+    if (!isPlainObject(raw)) return null;
+    if (typeof raw.dataDir !== 'string' || raw.dataDir.trim() === '') return null;
+    const dataDir = path.resolve(raw.dataDir.trim());
+    const from =
+      typeof raw.from === 'string' && raw.from.trim() !== '' ? path.resolve(raw.from.trim()) : null;
+    return { dataDir, from };
+  } catch {
+    return null;
+  }
+}
+
+// อ่าน data dir จาก pointer — คืน null เมื่อไม่มี/ไฟล์เสีย (อ่านแบบ fail-safe เสมอ)
+export function readDataDirPointer(pointerFile = DATA_DIR_POINTER_FILE) {
+  return readDataDirPointerEntry(pointerFile)?.dataDir ?? null;
+}
+
+export function writeDataDirPointer(toDir, { from = null, pointerFile = DATA_DIR_POINTER_FILE } = {}) {
+  const payload = { dataDir: toDir };
+  if (from !== null && from !== toDir) payload.from = from;
+  fs.writeFileSync(pointerFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+}
+
+function copyOrMoveSync(src, dst) {
+  try {
+    fs.renameSync(src, dst);
+  } catch (err) {
+    if (err?.code !== 'EXDEV') throw err;
+    fs.cpSync(src, dst, { recursive: true });
+    fs.rmSync(src, { recursive: true, force: true });
+  }
+}
+
+// ย้ายทุกอย่างใน data dir เดิมไปที่ใหม่ (rename เดียวกับไดรฟ์ / copy+ลบ ข้ามไดรฟ์)
+// แล้วเขียน pointer ให้เหลือแค่ dataDir — เขียน pointer ไม่ได้ต้องย้อนรอยย้ายกลับ กันข้อมูลอยู่สองที่
+export function applyDataDirMoveSync(fromDir, toDir, { pointerFile = DATA_DIR_POINTER_FILE } = {}) {
+  if (fs.existsSync(toDir) && fs.readdirSync(toDir).length > 0) {
+    throw new Error(`target folder is not empty: ${toDir}`);
+  }
+  fs.mkdirSync(toDir, { recursive: true });
+  const entries = fs.readdirSync(fromDir, { withFileTypes: true });
+  const moved = [];
+  try {
+    for (const entry of entries) {
+      const src = path.join(fromDir, entry.name);
+      const dst = path.join(toDir, entry.name);
+      copyOrMoveSync(src, dst);
+      moved.push({ src, dst });
+    }
+    writeDataDirPointer(toDir, { pointerFile });
+  } catch (err) {
+    for (const entry of moved.reverse()) {
+      try {
+        copyOrMoveSync(entry.dst, entry.src);
+      } catch {
+        /* rollback ล้มเหลว — ข้อมูลยังอยู่ครบฝั่ง destination ไม่หาย */
+      }
+    }
+    throw err;
+  }
+}
+
+function hasDataDirEnv(env) {
+  return typeof env.TML_DATA_DIR === 'string' && env.TML_DATA_DIR.trim() !== '';
+}
+
+// precedence: TML_DATA_DIR (env) > pointer (มี from = ย้ายข้อมูลตอน start นี้) > default ~/.tml-launcher
+function resolveDataDir(env) {
+  if (hasDataDirEnv(env)) return path.resolve(env.TML_DATA_DIR.trim());
+  const entry = readDataDirPointerEntry();
+  if (entry === null) return DEFAULT_DATA_DIR;
+  if (entry.from !== null && entry.from !== entry.dataDir) {
+    try {
+      applyDataDirMoveSync(entry.from, entry.dataDir);
+      return entry.dataDir;
+    } catch {
+      // ย้ายไม่ได้ตอน start → เขียน pointer กลับที่เดิม (best-effort) แล้วใช้ข้อมูลชุดเดิม
+      try {
+        writeDataDirPointer(entry.from);
+      } catch {
+        /* pointer เขียนไม่ได้ → start รอบถัดไปลองย้ายใหม่ */
+      }
+      return entry.from;
+    }
+  }
+  return entry.dataDir;
+}
 
 let cachedVersion = null;
 
@@ -97,14 +194,15 @@ function normalizeJavaRuntime(value) {
   return value;
 }
 
-// ตัวเลือก platform ของหน้าต่างเกม: 'auto' = ตาม session (Wayland native บน GNOME Wayland),
-// 'x11' = บังคับผ่าน XWayland — แล้ว GNOME/mutter จะวาด title bar + ปุ่มตามธีมระบบให้เอง
-export const WINDOW_PLATFORM_VALUES = Object.freeze(['auto', 'x11']);
+// ตัวเลือก platform ของหน้าต่างเกม: 'auto' = ตาม session, 'wayland' = บังคับ Wayland native
+// เท่านั้น (ไม่มี XWayland แล้ว — ตัวเลือกเก่า 'x11' ถูกถอดออก และ config เดิมจะถูกแปลงเป็น 'auto')
+export const WINDOW_PLATFORM_VALUES = Object.freeze(['auto', 'wayland']);
 export const DEFAULT_WINDOW_PLATFORM = 'auto';
 
 function normalizeWindowPlatform(value) {
   const platform = typeof value === 'string' ? value.trim().toLowerCase() : value;
   if (platform === undefined || platform === null || platform === '') return DEFAULT_WINDOW_PLATFORM;
+  if (platform === 'x11') return DEFAULT_WINDOW_PLATFORM;
   if (!WINDOW_PLATFORM_VALUES.includes(platform)) {
     throw new ConfigError(
       `window.platform must be one of: ${WINDOW_PLATFORM_VALUES.join(', ')} (got ${JSON.stringify(value)})`,
@@ -114,21 +212,6 @@ function normalizeWindowPlatform(value) {
 }
 
 export const OFFLINE_NAME_PATTERN = /^[A-Za-z0-9_]{3,16}$/;
-
-// LIVE FLOW — ตัวเลือกวิธี sign in: 'aad' (แอปของตัวเอง) หรือ 'live' (login.live.com + title ID)
-// ลบพร้อม src/auth/live.js เมื่อแอปผ่าน review (default เป็น 'aad')
-export const AUTH_FLOW_VALUES = Object.freeze(['aad', 'live']);
-export const DEFAULT_AUTH_FLOW = 'aad';
-
-function normalizeAuthFlow(value) {
-  if (value === undefined || value === null || value === '') return DEFAULT_AUTH_FLOW;
-  if (typeof value !== 'string' || !AUTH_FLOW_VALUES.includes(value)) {
-    throw new ConfigError(
-      `auth.flow must be one of: ${AUTH_FLOW_VALUES.join(', ')} (got ${JSON.stringify(value)})`,
-    );
-  }
-  return value;
-}
 
 function normalizeOfflineName(value) {
   if (value === undefined || value === null || value === '') return null;
@@ -152,8 +235,8 @@ function normalizeClientId(value) {
   return trimmed;
 }
 
-export function loadConfig({ cwd = process.cwd(), env = process.env } = {}) {
-  const dataDir = path.resolve(env.TML_DATA_DIR || path.join(cwd, 'tml-data'));
+export function loadConfig({ env = process.env } = {}) {
+  const dataDir = resolveDataDir(env);
   const configFile = path.join(dataDir, 'config.json');
   const file = readConfigFile(configFile);
 
@@ -168,7 +251,6 @@ export function loadConfig({ cwd = process.cwd(), env = process.env } = {}) {
   const level = normalizeLevel(env.TML_LOG_LEVEL ?? fileLog.level ?? DEFAULTS.logLevel);
   const javaRuntime = normalizeJavaRuntime(fileJava.runtime);
   const offlineName = normalizeOfflineName(fileAuth.offlineName);
-  const authFlow = normalizeAuthFlow(fileAuth.flow);
   const windowPlatform = normalizeWindowPlatform(fileWindow.platform);
 
   let authClientId = DEFAULT_MSA_CLIENT_ID;
@@ -186,6 +268,7 @@ export function loadConfig({ cwd = process.cwd(), env = process.env } = {}) {
     version: readVersion(),
     projectRoot: PROJECT_ROOT,
     dataDir,
+    dataDirFromEnv: hasDataDirEnv(env),
     paths: {
       dataDir,
       configFile,
@@ -208,7 +291,7 @@ export function loadConfig({ cwd = process.cwd(), env = process.env } = {}) {
       file: path.join(dataDir, 'logs', 'tml.log'),
       fromEnv: env.TML_LOG_LEVEL !== undefined && env.TML_LOG_LEVEL !== null,
     },
-    auth: { clientId: authClientId, source: authSource, offlineName, flow: authFlow },
+    auth: { clientId: authClientId, source: authSource, offlineName },
     java: { runtime: javaRuntime },
     window: { platform: windowPlatform },
   };
@@ -217,6 +300,10 @@ export function loadConfig({ cwd = process.cwd(), env = process.env } = {}) {
 }
 
 export function publicConfig(config) {
+  // pointer ชี้ที่อื่นอยู่ = เปลี่ยน data dir แล้วยังไม่ได้ restart → โชว์ banner จนกว่าจะ restart
+  // แต่ TML_DATA_DIR env เหนือกว่า pointer เสมอ → env คุมอยู่ก็ไม่มีอะไรต้องรอ
+  const pendingDataDir =
+    config.dataDirFromEnv === true ? null : readDataDirPointerEntry()?.dataDir ?? null;
   return {
     name: config.name,
     version: config.version,
@@ -229,12 +316,12 @@ export function publicConfig(config) {
       exportsDir: config.paths.exportsDir,
       webDir: config.paths.webDir,
     },
+    pendingDataDir: pendingDataDir !== null && pendingDataDir !== config.paths.dataDir ? pendingDataDir : null,
     log: { level: config.log.level },
     auth: {
       configured: Boolean(config.auth?.clientId),
       source: config.auth?.source ?? null,
       offlineName: config.auth?.offlineName ?? null,
-      flow: config.auth?.flow ?? DEFAULT_AUTH_FLOW, // LIVE FLOW — ลบ key นี้พร้อม src/auth/live.js
     },
     java: { runtime: config.java?.runtime ?? null },
     window: { platform: config.window?.platform ?? DEFAULT_WINDOW_PLATFORM },

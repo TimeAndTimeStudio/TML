@@ -3,46 +3,59 @@
 // License: GPL-3.0-or-later
 
 const REFRESH_MS = 15000;
-const VALID_VIEWS = new Set(['instances', 'instance', 'versions', 'settings']);
-
-const VERSION_TYPE_LABELS = {
-  release: 'Release',
-  snapshot: 'Snapshot',
-  old_beta: 'Old Beta',
-  old_alpha: 'Old Alpha',
-};
-
-const versionsState = { type: 'all', loaded: false, loading: false, selected: null };
+const VALID_VIEWS = new Set(['instances', 'servers', 'instance', 'create', 'settings']);
 
 const state = {
   health: null,
   config: null,
+  signedIn: false,
+  // 'checking' | 'online' | 'offline' — offline = backend หลุด → disconnect page ทับหน้าจอ
+  serverStatus: 'checking',
+  pendingDismissed: false,
 };
 
-const instancesState = { list: [], loaded: false, detail: null, tab: 'overview', mods: [], packs: { resourcepacks: [], shaderpacks: [] } };
-const importState = { token: null, manifest: null };
+const instancesState = {
+  list: [],
+  loaded: false,
+  detail: null,
+  tab: 'overview',
+  kindView: 'list',
+  mods: [],
+  packs: { resourcepacks: [], shaderpacks: [] },
+  checks: { mods: [], resourcepacks: [], shaderpacks: [] },
+  removed: [],
+  checking: false,
+  // MC version ที่ผล checks ปัจจุบันคำนวณมาเพื่อ (≠ minecraftVersion ของ instance = ยังไม่บันทึก)
+  updatesTarget: null,
+  autoCheckAt: {},
+};
+const serversState = { list: [], loaded: false };
+const importState = { token: null, manifest: null, mode: 'instance' };
+const createState = { mode: 'instance' };
+let versionPickerState = null;
 
 const el = {};
 
 function cacheElements() {
   const ids = [
-    'statusPill',
-    'statusText',
     'versionPill',
     'factEndpoint',
     'factUptime',
     'factNode',
     'factPlatform',
     'toastHost',
-    'authBtn',
     'accountPill',
     'skinOpenBtn',
+    'disconnectPage',
+    'disconnectRetryBtn',
+    'pendingBanner',
+    'pendingBannerClose',
   ];
   for (const id of ids) el[id] = document.getElementById(id);
 }
 
 async function fetchJson(path) {
-  const response = await fetch(path, {
+  const response = await apiFetch(path, {
     headers: { accept: 'application/json' },
     cache: 'no-store',
   });
@@ -108,10 +121,35 @@ function formatLastPlayed(iso) {
 }
 
 function setServerStatus(mode) {
-  const pill = el.statusPill;
-  pill.dataset.state = mode;
-  el.statusText.textContent =
-    mode === 'online' ? 'Launcher online' : mode === 'offline' ? 'Disconnected' : 'Connecting…';
+  if (state.serverStatus === mode) return;
+  const previous = state.serverStatus;
+  state.serverStatus = mode;
+  if (mode === 'offline') {
+    showDisconnectPage();
+  } else if (mode === 'online' && previous === 'offline') {
+    hideDisconnectPage();
+  }
+}
+
+function showDisconnectPage() {
+  if (el.disconnectPage) el.disconnectPage.hidden = false;
+}
+
+function hideDisconnectPage() {
+  if (el.disconnectPage) el.disconnectPage.hidden = true;
+}
+
+// fetch ของ API ตัวเอง — response กลับมา = backend ยังอยู่, network error = หลุด
+async function apiFetch(pathname, options = {}) {
+  let response;
+  try {
+    response = await fetch(pathname, options);
+  } catch (err) {
+    if (err?.name !== 'AbortError') setServerStatus('offline');
+    throw err;
+  }
+  setServerStatus('online');
+  return response;
 }
 
 function renderHealth() {
@@ -161,7 +199,7 @@ function renderConfig() {
     dataDir: config.paths.dataDir,
     instancesDir: config.paths.instancesDir,
     cacheDir: config.paths.cacheDir,
-    javaRuntime: selectedJavaLabel() ?? 'Not selected — pick one in Java Runtime (PLAY needs it)',
+    javaRuntime: selectedJavaLabel() ?? '—',
   };
 
   for (const [key, value] of Object.entries(values)) {
@@ -172,13 +210,16 @@ function renderConfig() {
   fillIfIdle(document.getElementById('cfgHost'), config.server.host);
   fillIfIdle(document.getElementById('cfgPort'), config.server.port);
   fillIfIdle(document.getElementById('cfgOfflineName'), config.auth?.offlineName ?? '');
-  renderAuthFlowPicker(); // LIVE FLOW — ลบพร้อม src/auth/live.js
   if (fillIfIdle(document.getElementById('cfgLogLevel'), config.log.level)) {
     settingsDropdowns.logLevel?.reset();
   }
   if (fillIfIdle(document.getElementById('cfgWindow'), config.window?.platform ?? 'auto')) {
     settingsDropdowns.windowPlatform?.reset();
   }
+
+  // banner หลังเปลี่ยน data dir — ขึ้นจนกว่า backend จะ restart (pendingDataDir ≠ dataDir จริง)
+  const pendingDataDir = config.pendingDataDir ?? null;
+  if (el.pendingBanner) el.pendingBanner.hidden = pendingDataDir === null || state.pendingDismissed;
 }
 
 function makeText(tag, className, text) {
@@ -188,145 +229,11 @@ function makeText(tag, className, text) {
   return node;
 }
 
-function formatDate(value) {
-  if (!value) return '—';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toISOString().slice(0, 10);
-}
-
 function formatBytes(value) {
   if (typeof value !== 'number' || value < 0) return '—';
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function versionTypeLabel(type) {
-  return VERSION_TYPE_LABELS[type] ?? type;
-}
-
-async function loadVersions({ refresh = false } = {}) {
-  const list = document.getElementById('versionsList');
-  const counter = document.getElementById('versionCount');
-  if (!list || versionsState.loading) return;
-
-  versionsState.loading = true;
-  list.replaceChildren(makeText('p', 'muted', 'Loading versions…'));
-
-  try {
-    const params = new URLSearchParams();
-    if (versionsState.type !== 'all') params.set('type', versionsState.type);
-    if (refresh) params.set('refresh', '1');
-
-    const data = await fetchJson(`/api/minecraft/versions?${params.toString()}`);
-    versionsState.loading = false;
-    versionsState.loaded = true;
-    counter.textContent = `${data.count} versions`;
-    renderVersionList(data);
-  } catch (err) {
-    versionsState.loading = false;
-    list.replaceChildren(makeText('p', 'muted', `Failed to load: ${err.message}`));
-    toast(err.message, { error: true });
-  }
-}
-
-function renderVersionList(data) {
-  const list = document.getElementById('versionsList');
-  list.replaceChildren();
-
-  if (data.versions.length === 0) {
-    list.appendChild(makeText('p', 'muted', 'No versions in this category'));
-    return;
-  }
-
-  for (const entry of data.versions) {
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = versionsState.selected === entry.id ? 'version-row is-active' : 'version-row';
-    row.dataset.id = entry.id;
-    row.append(
-      makeText('span', 'version-id', entry.id),
-      makeText('span', `version-type t-${entry.type}`, versionTypeLabel(entry.type)),
-      makeText('span', 'version-date', formatDate(entry.releaseTime))
-    );
-    row.addEventListener('click', () => selectVersion(entry.id));
-    list.appendChild(row);
-  }
-}
-
-async function selectVersion(id) {
-  const detail = document.getElementById('versionDetail');
-  if (!detail) return;
-
-  versionsState.selected = id;
-  for (const row of document.querySelectorAll('.version-row')) {
-    row.classList.toggle('is-active', row.dataset.id === id);
-  }
-
-  detail.replaceChildren(makeText('p', 'muted', `Loading ${id}…`));
-
-  try {
-    const data = await fetchJson(`/api/minecraft/versions/${encodeURIComponent(id)}`);
-    renderVersionDetail(data);
-  } catch (err) {
-    detail.replaceChildren(makeText('p', 'muted', err.message));
-  }
-}
-
-function renderVersionDetail({ version, source }) {
-  const detail = document.getElementById('versionDetail');
-  if (!detail) return;
-
-  detail.replaceChildren();
-
-  const head = document.createElement('div');
-  head.className = 'version-detail-head';
-  head.append(
-    makeText('h3', '', version.id),
-    makeText('span', `version-type t-${version.type}`, versionTypeLabel(version.type))
-  );
-
-  const facts = document.createElement('dl');
-  facts.className = 'facts';
-
-  const rows = [
-    ['Type', version.type],
-    ['Release time', formatDate(version.releaseTime)],
-    ['Main class', version.mainClass],
-    ['Java', version.javaVersion ? `${version.javaVersion.majorVersion} (${version.javaVersion.component ?? '—'})` : '—'],
-    ['Assets index', `${version.assetIndex.id} · ${formatBytes(version.assetIndex.size)}`],
-    ['Client jar', formatBytes(version.downloads.client.size)],
-    ['Client sha1', version.downloads.client.sha1],
-    ['Libraries', String(version.libraries.length)],
-    ['Metadata', source],
-  ];
-
-  for (const [label, value] of rows) {
-    const item = document.createElement('div');
-    item.append(makeText('dt', '', label), makeText('dd', '', value));
-    facts.appendChild(item);
-  }
-
-  detail.append(head, facts);
-}
-
-function setupVersionControls() {
-  const filters = document.getElementById('versionFilters');
-  const refreshButton = document.getElementById('versionRefresh');
-  if (!filters) return;
-
-  filters.addEventListener('click', (event) => {
-    const button = event.target.closest('.seg');
-    if (!button) return;
-
-    versionsState.type = button.dataset.type;
-    for (const segment of filters.querySelectorAll('.seg')) {
-      segment.classList.toggle('is-active', segment === button);
-    }
-    loadVersions();
-  });
-
-  refreshButton?.addEventListener('click', () => loadVersions({ refresh: true }));
 }
 
 async function refresh() {
@@ -344,12 +251,14 @@ async function refresh() {
     renderHealth();
     renderConfig();
     await loadInstances({ silent: true });
+    await loadServers({ silent: true });
     // โหลดรายการ java runtime ตั้งแต่เปิดแอป จะได้แสดง label "Java 25 (java-runtime-…)" ได้ทันที
     // (loadJavaRuntimes มี loaded flag → refresh รอบถัดไปจะไม่ยิงซ้ำ)
     await loadJavaRuntimes();
   } catch (err) {
-    setServerStatus('offline');
-    if (err.status !== 404) toast(err.message, { error: true });
+    // network error = backend หลุด (apiFetch ตั้ง offline ไว้แล้ว) — disconnect page แทน toast
+    if (err.status === undefined && err?.name !== 'AbortError') setServerStatus('offline');
+    if (state.serverStatus !== 'offline' && err.status !== 404) toast(err.message, { error: true });
   }
 }
 
@@ -365,15 +274,19 @@ function activateView(name) {
     panel.hidden = !active;
   }
 
-  if (view === 'versions' && !versionsState.loaded && !versionsState.loading) {
-    loadVersions();
-  }
   if (view === 'instances' && instancesState.loaded) {
     loadInstances({ silent: true });
+  }
+  if (view === 'servers' && serversState.loaded) {
+    loadServers({ silent: true });
+  }
+  if (view === 'create') {
+    loadCatalogOptions();
   }
   if (view === 'settings') {
     loadJavaRuntimes();
   }
+  renderQuickInstances();
 }
 
 function showView(name, { updateHash = true } = {}) {
@@ -407,7 +320,7 @@ function setupNavigation() {
 // ---------- Instance management ----------
 
 async function postJson(pathname, body, { signal } = {}) {
-  const response = await fetch(pathname, {
+  const response = await apiFetch(pathname, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(body ?? {}),
@@ -429,7 +342,7 @@ async function postJson(pathname, body, { signal } = {}) {
 }
 
 async function patchJson(pathname, body, { signal } = {}) {
-  const response = await fetch(pathname, {
+  const response = await apiFetch(pathname, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(body ?? {}),
@@ -451,7 +364,7 @@ async function patchJson(pathname, body, { signal } = {}) {
 }
 
 async function deleteJson(pathname) {
-  const response = await fetch(pathname, { method: 'DELETE', headers: { accept: 'application/json' } });
+  const response = await apiFetch(pathname, { method: 'DELETE', headers: { accept: 'application/json' } });
   let payload = null;
   try {
     payload = await response.json();
@@ -571,6 +484,106 @@ function renderInstances() {
   for (const instance of instances) {
     grid.appendChild(instanceCard(instance));
   }
+  renderQuickInstances();
+}
+
+// รายการ instance ลัดบน sidebar (Modrinth-style quick switcher)
+function renderQuickInstances() {
+  const wrap = document.getElementById('sideQuick');
+  const host = document.getElementById('sideQuickList');
+  if (!wrap || !host) return;
+  const instances = instancesState.list;
+  wrap.hidden = instances.length === 0;
+  host.replaceChildren();
+  const activeId = location.hash.startsWith('#instance/')
+    ? decodeURIComponent(location.hash.slice('#instance/'.length))
+    : null;
+
+  for (const instance of instances) {
+    const item = makeText('button', 'side-quick-item', '');
+    item.type = 'button';
+    if (instance.id === activeId) item.classList.add('is-active');
+    const icon = instanceIconNode(instance, 'side-quick-icon');
+    const text = document.createElement('span');
+    text.className = 'side-quick-text';
+    text.append(
+      makeText('span', 'side-quick-name', instance.name),
+      makeText('span', 'side-quick-meta', `MC ${instance.minecraftVersion}`),
+    );
+    item.append(icon, text);
+    if (instance.running) item.appendChild(makeText('span', 'side-quick-run', ''));
+    item.addEventListener('click', () => {
+      location.hash = `#instance/${encodeURIComponent(instance.id)}`;
+    });
+    host.appendChild(item);
+  }
+}
+
+// ---------- instance icon (มีรูป = icon: true → /api/instances/:id/icon, ไม่มี = tile ตัวอักษร) ----------
+
+function instanceIconNode(item, className) {
+  if (item?.icon) {
+    const img = document.createElement('img');
+    img.className = className;
+    img.alt = '';
+    img.loading = 'lazy';
+    img.src = `/api/instances/${encodeURIComponent(item.id)}/icon`;
+    img.addEventListener(
+      'error',
+      () => {
+        img.replaceWith(instanceIconNode({ ...item, icon: false }, className));
+      },
+      { once: true }
+    );
+    return img;
+  }
+  const initial = (item?.name ?? '').trim().charAt(0).toUpperCase() || '?';
+  const fallback = makeText('span', `${className} instance-icon-fallback`, initial);
+  fallback.setAttribute('aria-hidden', 'true');
+  return fallback;
+}
+
+// คลิกที่ไอคอนบนหน้า detail → เลือกรูปจากเครื่อง (Prism-style custom icon)
+function promptInstanceIcon(instance, { signal } = {}) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/png,image/jpeg,image/gif,image/webp';
+  input.addEventListener(
+    'change',
+    () => {
+      const file = input.files?.[0];
+      if (file) void uploadInstanceIcon(instance, file, { signal });
+    },
+    { once: true }
+  );
+  input.click();
+}
+
+const ICON_MAX_BYTES = 2 * 1024 * 1024;
+
+async function uploadInstanceIcon(instance, file, { signal } = {}) {
+  if (file.size > ICON_MAX_BYTES) {
+    toast('Icon is too large — 2 MB max', { error: true });
+    return;
+  }
+  try {
+    const response = await apiFetch(`/api/instances/${encodeURIComponent(instance.id)}/icon`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: file,
+      signal,
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(payload?.error?.message || `Icon upload responded ${response.status}`);
+    }
+    toast('Icon updated');
+    await loadInstances({ silent: true });
+    if (instance.type === 'server') await loadServers({ silent: true });
+    if (instancesState.detail?.id === instance.id) await loadInstanceDetail(instance.id);
+  } catch (err) {
+    if (err?.name !== 'AbortError' && state.serverStatus !== 'offline') toast(err.message, { error: true });
+  }
 }
 
 function instanceCard(instance) {
@@ -586,7 +599,9 @@ function instanceCard(instance) {
   nameBtn.addEventListener('click', () => {
     location.hash = `#instance/${encodeURIComponent(instance.id)}`;
   });
-  head.appendChild(nameBtn);
+  const title = makeText('div', 'instance-card-title', '');
+  title.append(instanceIconNode(instance, 'instance-icon'), nameBtn);
+  head.appendChild(title);
   if (instance.running) head.appendChild(makeText('span', 'pill pill-running', 'RUNNING'));
   card.appendChild(head);
 
@@ -595,7 +610,7 @@ function instanceCard(instance) {
   const played = (instance.playSeconds ?? 0) + (instance.sessionSeconds ?? 0);
   meta.append(
     makeText('span', '', `Minecraft ${instance.minecraftVersion}`),
-    makeText('span', '', `Fabric ${instance.fabricLoaderVersion}`),
+    makeText('span', '', `${instance.fabricLoaderVersion}`),
     makeText('span', '', `${instance.mods ?? 0} Mods`),
     makeText('span', '', played > 0 ? `${formatPlaySeconds(played)} played` : 'Not played yet')
   );
@@ -636,6 +651,101 @@ function instanceCard(instance) {
   return card;
 }
 
+// ---------- Servers ----------
+
+async function loadServers({ silent = false } = {}) {
+  try {
+    const data = await fetchJson('/api/servers');
+    serversState.list = data.servers ?? [];
+    serversState.loaded = true;
+    renderServers();
+  } catch (err) {
+    if (!silent) toast(err.message, { error: true });
+  }
+}
+
+function renderServers() {
+  const grid = document.getElementById('serversGrid');
+  const empty = document.getElementById('serversEmpty');
+  if (!grid || !empty) return;
+
+  grid.replaceChildren();
+  const servers = serversState.list;
+  grid.hidden = servers.length === 0;
+  empty.hidden = servers.length > 0;
+
+  for (const server of servers) {
+    grid.appendChild(serverCard(server));
+  }
+}
+
+function serverCard(server) {
+  const card = document.createElement('article');
+  card.className = 'instance-card card';
+  card.dataset.id = server.id;
+
+  const head = document.createElement('div');
+  head.className = 'instance-card-head';
+
+  const nameBtn = makeText('button', 'instance-name', server.name);
+  nameBtn.type = 'button';
+  nameBtn.addEventListener('click', () => {
+    location.hash = `#instance/${encodeURIComponent(server.id)}`;
+  });
+  const title = makeText('div', 'instance-card-title', '');
+  title.append(instanceIconNode(server, 'instance-icon'), nameBtn);
+  head.appendChild(title);
+  if (server.running) head.appendChild(makeText('span', 'pill pill-running', 'RUNNING'));
+  card.appendChild(head);
+
+  const meta = document.createElement('div');
+  meta.className = 'instance-meta';
+  meta.append(
+    makeText('span', '', `Minecraft ${server.minecraftVersion}`),
+    makeText('span', '', `${server.fabricLoaderVersion}`),
+    makeText('span', '', `Port ${server.port ?? 25565}`),
+    makeText('span', '', `${server.mods ?? 0} Mods`)
+  );
+  card.appendChild(meta);
+
+  const actions = document.createElement('div');
+  actions.className = 'instance-actions';
+
+  const toggle = makeText('button', server.running ? 'btn' : 'btn btn-primary', server.running ? 'STOP' : 'START');
+  toggle.type = 'button';
+  toggle.addEventListener('click', async () => {
+    toggle.disabled = true;
+    try {
+      if (server.running) {
+        await postJson(`/api/servers/${encodeURIComponent(server.id)}/stop`);
+        toast(`${server.name} stopped`);
+      } else {
+        await postJson(`/api/servers/${encodeURIComponent(server.id)}/start`);
+        toast(`${server.name} is starting`);
+      }
+      await loadServers({ silent: true });
+    } catch (err) {
+      toast(err.message, { error: true });
+      if (err.code === 'EULA_NOT_ACCEPTED') location.hash = `#instance/${encodeURIComponent(server.id)}`;
+      await loadServers({ silent: true }).catch(() => {});
+    } finally {
+      toggle.disabled = false;
+    }
+  });
+
+  const exp = makeText('button', 'btn', 'EXPORT');
+  exp.type = 'button';
+  exp.addEventListener('click', () => exportInstance(server));
+
+  const del = makeText('button', 'btn btn-danger', 'DELETE');
+  del.type = 'button';
+  del.addEventListener('click', () => deleteInstance(server, 'server'));
+
+  actions.append(toggle, exp, del);
+  card.appendChild(actions);
+  return card;
+}
+
 const exportModalState = { instance: null, force: false };
 
 function updateExportPreview() {
@@ -653,7 +763,7 @@ function openExportModal(instance) {
   if (errorBox) errorBox.hidden = true;
   const subtitle = document.getElementById('exportSubtitle');
   if (subtitle) {
-    subtitle.textContent = `${instance.name} · Minecraft ${instance.minecraftVersion} · Fabric ${instance.fabricLoaderVersion ?? '—'}`;
+    subtitle.textContent = `${instance.name} · Minecraft ${instance.minecraftVersion} · ${instance.fabricLoaderVersion ?? '—'}`;
   }
   const pathInput = document.getElementById('exportPath');
   if (pathInput) pathInput.value = state.config?.paths?.exportsDir ?? '';
@@ -731,16 +841,55 @@ async function exportInstance(instance) {
   openExportModal(instance);
 }
 
-async function deleteInstance(instance) {
-  const confirmed = window.confirm(`Delete "${instance.name}"?\n\nThis removes its instance.json, minecraft/ directory, mods, config and saves permanently.`);
+// confirm dialog ในแอป — แทน window.confirm (ไม่ใช้ dialog ของ browser)
+function confirmDialog({ title = 'Confirm', message = '', confirmLabel = 'CONFIRM', danger = true }) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('confirmModal');
+    const okBtn = document.getElementById('confirmOkBtn');
+    const cancelBtn = document.getElementById('confirmCancelBtn');
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmMessage').textContent = message;
+    okBtn.textContent = confirmLabel;
+    okBtn.classList.toggle('btn-danger', danger);
+    okBtn.classList.toggle('btn-primary', !danger);
+    const onKey = (event) => {
+      if (event.key === 'Escape') done(false);
+    };
+    function done(value) {
+      modal.hidden = true;
+      document.removeEventListener('keydown', onKey, true);
+      cancelBtn.onclick = null;
+      okBtn.onclick = null;
+      modal.onclick = null;
+      resolve(value);
+    }
+    cancelBtn.onclick = () => done(false);
+    okBtn.onclick = () => done(true);
+    modal.onclick = (event) => {
+      if (event.target === modal) done(false);
+    };
+    document.addEventListener('keydown', onKey, true);
+    modal.hidden = false;
+    cancelBtn.focus();
+  });
+}
+
+async function deleteInstance(instance, mode = 'instance') {
+  const what = mode === 'server' ? 'server' : 'instance';
+  const confirmed = await confirmDialog({
+    title: `Delete ${what}`,
+    message: `Delete "${instance.name}"? This removes its instance.json, minecraft/ directory, mods, config and ${what === 'server' ? 'world' : 'saves'} permanently.`,
+    confirmLabel: 'DELETE',
+  });
   if (!confirmed) return;
   try {
     await deleteJson(`/api/instances/${instance.id}`);
     toast(`${instance.name} deleted`);
     if (location.hash.startsWith('#instance/')) {
-      location.hash = '#instances';
+      location.hash = mode === 'server' ? '#servers' : '#instances';
     }
     await loadInstances({ silent: true });
+    await loadServers({ silent: true });
   } catch (err) {
     toast(err.message, { error: true });
   }
@@ -753,8 +902,27 @@ async function loadInstanceDetail(id) {
   instancesState.detail = null;
   instancesState.mods = [];
   if (previousId !== id) {
-    clearModSearchResults();
-    setInstanceTab('overview');
+    instancesState.checks = { mods: [], resourcepacks: [], shaderpacks: [] };
+    instancesState.removed = [];
+    instancesState.autoCheckAt = {};
+    renderRemoved();
+    for (const panel of Object.keys(PROGRESS_PANELS)) {
+      const cfg = PROGRESS_PANELS[panel];
+      const status = document.getElementById(cfg.status);
+      if (status) {
+        status.hidden = true;
+        status.textContent = '';
+      }
+      const updateAll = document.getElementById(cfg.updateAll);
+      if (updateAll) updateAll.hidden = true;
+      setProgress(panel, false);
+    }
+    for (const searchPanel of Object.keys(SEARCH_PANELS)) clearSearchResults(searchPanel);
+    resetUpdatesPanel();
+    const consoleBox = document.getElementById('srvConsole');
+    if (consoleBox) consoleBox.textContent = '';
+    // ยังไม่รู้ว่าเป็น client หรือ server → ปิดแท็บไว้ก่อน เลือกใหม่หลังโหลดเสร็จ
+    setInstanceTab(null);
   }
   document.getElementById('instanceTitle').textContent = id;
   document.getElementById('instanceSubtitle').textContent = 'Loading…';
@@ -765,6 +933,12 @@ async function loadInstanceDetail(id) {
     const data = await fetchJson(`/api/instances/${encodeURIComponent(id)}`);
     instancesState.detail = data.instance;
     renderInstanceDetail();
+    // แท็บที่เปิดอยู่ใช้กับชนิดนี้ไม่ได้ → ไปแท็บแรกของชนิดนี้
+    const validTabs = data.instance.type === 'server'
+      ? ['start', 'mods', 'updates', 'settings']
+      : ['overview', 'mods', 'resourcepacks', 'shaders', 'updates', 'settings'];
+    if (!validTabs.includes(instancesState.tab)) setInstanceTab(validTabs[0]);
+    else setInstanceTab(instancesState.tab, instancesState.kindView);
   } catch (err) {
     toast(err.message, { error: true });
     location.hash = '#instances';
@@ -786,29 +960,72 @@ function selectedJavaLabel() {
 function renderInstanceDetail() {
   const instance = instancesState.detail;
   if (!instance) return;
+  const isServer = instance.type === 'server';
 
   document.getElementById('instanceTitle').textContent = instance.name;
   document.getElementById('instanceSubtitle').textContent =
-    `Minecraft ${instance.minecraftVersion} · Fabric ${instance.fabricLoaderVersion} · ${instance.mods ?? 0} Mods`;
+    `Minecraft ${instance.minecraftVersion} · ${instance.fabricLoaderVersion} · ${instance.mods ?? 0} Mods`;
+
+  // ไอคอนหัวหน้า detail — รูป (มี cache-bust เผื่ออัปโหลดรูปใหม่) หรือ tile ตัวอักษร
+  const detailIcon = document.getElementById('iIcon');
+  const detailFallback = document.getElementById('iIconFallback');
+  const detailIconDel = document.getElementById('iIconDeleteBtn');
+  if (detailIconDel) detailIconDel.hidden = !instance.icon;
+  if (detailIcon && detailFallback) {
+    if (instance.icon) {
+      detailIcon.src = `/api/instances/${encodeURIComponent(instance.id)}/icon?t=${Date.now()}`;
+      detailIcon.hidden = false;
+      detailFallback.hidden = true;
+    } else {
+      detailIcon.hidden = true;
+      detailIcon.removeAttribute('src');
+      detailFallback.textContent = (instance.name ?? '').trim().charAt(0).toUpperCase() || '?';
+      detailFallback.hidden = false;
+    }
+  }
+
+  const backLabel = document.getElementById('instanceBackLabel');
+  if (backLabel) backLabel.textContent = isServer ? 'Servers' : 'Instances';
+
+  // client มี OVERVIEW/PLAY/RESOURCES/SHADERS — server มีแท็บ START แทน (หน้าอื่นเอาออก)
+  document.getElementById('iOverviewBtn').hidden = isServer;
+  document.getElementById('iPlayBtn').hidden = isServer;
+  const startTabBtn = document.getElementById('iStartBtn');
+  if (startTabBtn) startTabBtn.hidden = !isServer;
+  document.getElementById('iResourcesBtn').hidden = isServer;
+  document.getElementById('iShadersBtn').hidden = isServer;
 
   const facts = document.getElementById('instanceFacts');
   facts.replaceChildren();
   const rows = [
     ['Instance id', instance.id],
     ['Minecraft', instance.minecraftVersion],
-    ['Loader', `${instance.loader} ${instance.fabricLoaderVersion}`],
+    ['Loader', instance.fabricLoaderVersion],
     ['Mods', String(instance.mods ?? 0)],
-    ['Java', selectedJavaLabel() ?? 'Not selected'],
+    ['Java', selectedJavaLabel() ?? '—'],
     ['Play time', formatPlaySeconds((instance.playSeconds ?? 0) + (instance.sessionSeconds ?? 0))],
     ['Last played', formatLastPlayed(instance.lastPlayedAt)],
     ['Memory', instance.memory ? `${instance.memory.min} – ${instance.memory.max}` : '—'],
     ['Extra JVM args', instance.extraJvmArgs?.length ? instance.extraJvmArgs.join(' ') : '—'],
     ['Status', instance.running ? `running (pid ${instance.pid})` : 'stopped'],
   ];
+  if (isServer) rows.push(['Port', String(instance.port ?? 25565)]);
   for (const [label, value] of rows) {
     const item = document.createElement('div');
     item.append(makeText('dt', '', label), makeText('dd', '', value));
     facts.appendChild(item);
+  }
+  if (isServer) {
+    renderServerPanel({
+      running: instance.running,
+      pid: instance.pid,
+      sessionSeconds: instance.sessionSeconds ?? 0,
+      installed: instance.installed,
+      eulaAccepted: instance.eulaAccepted,
+      port: instance.port,
+      busy: false,
+      phase: instance.running ? 'starting' : 'idle',
+    });
   }
 
   const play = document.getElementById('iPlayBtn');
@@ -818,31 +1035,1181 @@ function renderInstanceDetail() {
   fillIfIdle(document.getElementById('isMemMin'), instance.memory?.min ?? '');
   fillIfIdle(document.getElementById('isMemMax'), instance.memory?.max ?? '');
   fillIfIdle(document.getElementById('isJvmArgs'), formatArgString(instance.extraJvmArgs));
+  const portField = document.getElementById('isPortField');
+  if (portField) portField.hidden = !isServer;
+  fillIfIdle(document.getElementById('isPort'), String(instance.port ?? 25565));
   const readOnly = {
     isId: instance.id,
-    isMc: instance.minecraftVersion,
-    isLoader: `${instance.loader} ${instance.fabricLoaderVersion}`,
-    isJava: selectedJavaLabel() ?? 'Not selected',
+    isLoader: instance.fabricLoaderVersion,
+    isJava: selectedJavaLabel() ?? '—',
   };
   for (const [id, value] of Object.entries(readOnly)) {
     const cell = document.getElementById(id);
     if (cell) cell.textContent = String(value);
   }
+  const revertBtn = document.getElementById('updRevertBtn');
+  if (revertBtn) {
+    const prevVersion = instance.previousMinecraftVersion;
+    // โชว์ REVERT เฉพาะเวอร์ชั่นก่อนหน้าที่เก่ากว่า current เท่านั้น — เก่า/ใหม่ผิดที่ไม่ย้อนให้
+    const canRevert = Boolean(
+      prevVersion
+      && prevVersion !== instance.minecraftVersion
+      && compareVersionsDesc(prevVersion, instance.minecraftVersion) > 0,
+    );
+    revertBtn.hidden = !canRevert;
+    revertBtn.textContent = canRevert ? `REVERT TO ${prevVersion}` : '';
+  }
+  fetchMcVersionIds()
+    .catch(() => [])
+    .then((ids) => {
+      if (instancesState.detail?.id !== instance.id) return;
+
+      // dropdown เวอร์ชั่นเป้าหมายของแท็บ UPDATES — โชว์เฉพาะใหม่กว่า + ปัจจุบัน ห้ามมีเก่ากว่า
+      if (ids.length > 0) {
+        const current = instance.minecraftVersion;
+        const idx = ids.indexOf(current);
+        const options = [];
+        if (idx === -1) {
+          // current ไม่อยู่ใน catalog (snapshot/กำหนดเอง) → เทียบเลขเอง เก็บเฉพาะใหม่กว่า
+          options.push({ value: current, label: `${current} (current)`, group: 'Current' });
+          for (const id of ids) {
+            // comparator นี้คืน >0 เมื่อ a เก่ากว่า (เรียง newest-first) → ใหม่กว่า current ต้องใช้ < 0
+            if (compareVersionsDesc(id, current) < 0) options.push({ value: id, label: `${id} (newer)`, group: 'Newer' });
+          }
+        } else {
+          for (const id of ids.slice(0, idx)) options.push({ value: id, label: `${id} (newer)`, group: 'Newer' });
+          options.push({ value: current, label: `${current} (current)`, group: 'Current' });
+        }
+        // เวอร์ชั่นก่อนหน้าที่เคยใช้อยู่ — อนุญาตเฉพาะตัวนี้ตัวเดียวเพื่อให้ย้อนกลับได้ (ไม่ใช่การเปิดลิสต์เก่าทั้งหมด)
+        // เฉพาะตอนที่เก่ากว่า current (compareVersionsDesc > 0) — ถ้าใหม่กว่ามันซ้ำกับกลุ่ม Newer อยู่แล้ว
+        const prev = instance.previousMinecraftVersion;
+        if (prev && prev !== current && compareVersionsDesc(prev, current) > 0) {
+          options.push({ value: prev, label: `${prev} (previous)`, group: 'Previous' });
+        }
+        updatesVersionDropdown?.setOptions(options);
+        const updInput = document.getElementById('updVersion');
+        if (updInput?.dataset.dirty !== '1') updatesVersionDropdown?.fillIfIdle(current);
+      }
+    });
 }
 
-function setInstanceTab(tab) {
+// ---------- Server console (แท็บ START) ----------
+
+const SERVER_CONSOLE_MAX_LINES = 1000;
+const SRV_PHASE_LABELS = { idle: 'Stopped', installing: 'Installing…', starting: 'Starting…', running: 'Running' };
+let serverPoll = null;
+
+function appendServerConsole(lines) {
+  if (!Array.isArray(lines) || lines.length === 0) return;
+  const box = document.getElementById('srvConsole');
+  if (!box) return;
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+  const existing = box.textContent === '' ? [] : box.textContent.split('\n');
+  for (const line of lines) existing.push(line.text ?? String(line));
+  if (existing.length > SERVER_CONSOLE_MAX_LINES) existing.splice(0, existing.length - SERVER_CONSOLE_MAX_LINES);
+  box.textContent = existing.join('\n');
+  if (nearBottom) box.scrollTop = box.scrollHeight;
+}
+
+function renderServerPanel(status) {
+  const pill = document.getElementById('srvStatePill');
+  const facts = document.getElementById('srvFacts');
+  if (!pill || !facts) return;
+  const busy = status.busy === true;
+  const phase = status.phase ?? 'idle';
+  pill.textContent = SRV_PHASE_LABELS[phase] ?? 'Stopped';
+  pill.className = status.running === true ? 'pill pill-running' : 'pill pill-muted';
+
+  const rows = [
+    ['Status', status.running === true ? `running (pid ${status.pid})` : busy ? 'working…' : 'stopped'],
+    ['Uptime', status.running === true ? formatUptime(status.sessionSeconds ?? 0) : '—'],
+    ['Port', String(status.port ?? 25565)],
+    ['EULA', status.eulaAccepted === true ? 'Accepted' : 'Not accepted'],
+    ['Server files', status.installed === true ? 'Installed' : 'Installs on first START'],
+  ];
+  facts.replaceChildren();
+  for (const [label, value] of rows) {
+    const item = document.createElement('div');
+    item.append(makeText('dt', '', label), makeText('dd', '', value));
+    facts.appendChild(item);
+  }
+
+  const banner = document.getElementById('srvEulaBanner');
+  if (banner) banner.hidden = status.eulaAccepted === true;
+  const startBtn = document.getElementById('srvStartBtn');
+  const stopBtn = document.getElementById('srvStopBtn');
+  if (startBtn) {
+    startBtn.hidden = status.running === true;
+    startBtn.disabled = busy === true;
+  }
+  if (stopBtn) stopBtn.hidden = status.running !== true;
+  const statusText = document.getElementById('srvStatus');
+  if (statusText) {
+    statusText.hidden = busy !== true;
+    statusText.textContent = phase === 'installing' ? 'Installing server files…' : 'Working…';
+  }
+}
+
+function stopServerPoll() {
+  if (serverPoll?.timer) clearTimeout(serverPoll.timer);
+  serverPoll = null;
+}
+
+// poll console + status ทุกวินาทีขณะเปิดแท็บ START — เลิกเมื่อออกจากแท็บ/เปลี่ยน instance/ปิดหน้า
+function startServerPoll() {
+  const detail = instancesState.detail;
+  const id = detail?.type === 'server' ? detail.id : null;
+  if (!id) return;
+  if (serverPoll && serverPoll.id === id) return;
+  stopServerPoll();
+  const poll = { id, timer: null, since: 0 };
+  serverPoll = poll;
+  const tick = async () => {
+    if (serverPoll !== poll) return;
+    if (
+      instancesState.detail?.id !== id
+      || instancesState.tab !== 'start'
+      || location.hash !== `#instance/${encodeURIComponent(id)}`
+    ) {
+      stopServerPoll();
+      return;
+    }
+    try {
+      const consoleData = await fetchJson(`/api/servers/${encodeURIComponent(id)}/console?since=${poll.since}`);
+      if (serverPoll !== poll) return;
+      poll.since = consoleData.nextSince ?? poll.since;
+      appendServerConsole(consoleData.lines);
+      const status = await fetchJson(`/api/servers/${encodeURIComponent(id)}/status`);
+      if (serverPoll !== poll) return;
+      renderServerPanel(status);
+    } catch {
+      /* เงียบ — รอบถัดไป convergence เอง */
+    }
+    if (serverPoll === poll) poll.timer = setTimeout(tick, 1000);
+  };
+  tick();
+}
+
+function setInstanceTab(tab, kindView = 'list') {
   instancesState.tab = tab;
+  instancesState.kindView = kindView;
   const show = (panelId, active) => {
     const panel = document.getElementById(panelId);
     if (panel) panel.hidden = !active;
   };
+  // แท็บ content = { แท็บ: suffix ของ panel } — แต่ละแท็บมี 2 หน้า: list (INSTALLED) + get (GET)
+  const kindSuffixes = { mods: 'Mods', resourcepacks: 'Rp', shaders: 'Sp' };
   show('instancePanelOverview', tab === 'overview');
-  show('instancePanelMods', tab === 'mods');
-  show('instancePanelPacks', tab === 'packs');
+  show('instancePanelStart', tab === 'start');
   show('instancePanelSettings', tab === 'settings');
+  show('instancePanelUpdates', tab === 'updates');
+  for (const [kindTab, suffix] of Object.entries(kindSuffixes)) {
+    const active = tab === kindTab;
+    show(`instancePanel${suffix}`, active && kindView === 'list');
+    show(`instancePanel${suffix}Get`, active && kindView === 'get');
+  }
+  document.getElementById('iOverviewBtn')?.classList.toggle('is-active', tab === 'overview');
+  document.getElementById('iStartBtn')?.classList.toggle('is-active', tab === 'start');
   document.getElementById('iModsBtn')?.classList.toggle('is-active', tab === 'mods');
-  document.getElementById('iPacksBtn')?.classList.toggle('is-active', tab === 'packs');
+  document.getElementById('iResourcesBtn')?.classList.toggle('is-active', tab === 'resourcepacks');
+  document.getElementById('iShadersBtn')?.classList.toggle('is-active', tab === 'shaders');
+  document.getElementById('iUpdatesBtn')?.classList.toggle('is-active', tab === 'updates');
   document.getElementById('iSettingsBtn')?.classList.toggle('is-active', tab === 'settings');
+  const subNav = document.getElementById('kindSubNav');
+  if (subNav) subNav.hidden = !Object.hasOwn(kindSuffixes, tab);
+  for (const seg of document.querySelectorAll('#kindSubNav .seg')) {
+    seg.classList.toggle('is-active', (seg.dataset.kindView ?? 'list') === kindView);
+  }
+  // console ของ server poll ขณะเปิดแท็บ START — ออกจากแท็บ/เปลี่ยน instance ต้องหยุดด้วย
+  if (tab === 'start' && instancesState.detail?.type === 'server') startServerPoll();
+  else stopServerPoll();
+}
+
+// ---------- Update checks (Modrinth hash + latest version) ----------
+
+const PROGRESS_PANELS = {
+  mods: {
+    wrap: 'modCheckProgress',
+    fill: 'modCheckProgressFill',
+    label: 'modCheckProgressLabel',
+    status: 'modCheckStatus',
+    check: 'modCheckBtn',
+    updateAll: 'modUpdateAllBtn',
+  },
+  rp: {
+    wrap: 'rpCheckProgress',
+    fill: 'rpCheckProgressFill',
+    label: 'rpCheckProgressLabel',
+    status: 'rpCheckStatus',
+    check: 'rpCheckBtn',
+    updateAll: 'rpUpdateAllBtn',
+  },
+  sp: {
+    wrap: 'spCheckProgress',
+    fill: 'spCheckProgressFill',
+    label: 'spCheckProgressLabel',
+    status: 'spCheckStatus',
+    check: 'spCheckBtn',
+    updateAll: 'spUpdateAllBtn',
+  },
+  updates: {
+    wrap: 'updCheckProgress',
+    fill: 'updCheckProgressFill',
+    label: 'updCheckProgressLabel',
+    status: 'updCheckStatus',
+    check: 'updCheckBtn',
+    updateAll: 'updConfirmBtn',
+  },
+};
+
+const AUTO_CHECK_MIN_AGE_MS = 15000;
+
+// แท็บในหน้า instance ↔ ชนิดไฟล์ (kind ของ API) ↔ panel ที่ใช้แสดงผล/progress
+const TAB_KIND = { mods: 'mods', resourcepacks: 'resourcepacks', shaders: 'shaderpacks' };
+const KIND_PANEL = { mods: 'mods', resourcepacks: 'rp', shaderpacks: 'sp' };
+const PANEL_KIND = { mods: 'mods', rp: 'resourcepacks', sp: 'shaderpacks' };
+
+function panelForKind(kind) {
+  return KIND_PANEL[kind] ?? 'mods';
+}
+
+function kindForPanel(panelId) {
+  return PANEL_KIND[panelId] ?? 'mods';
+}
+
+function checkKindsForPanel(panelId) {
+  return [kindForPanel(panelId)];
+}
+
+function panelForKinds(kinds) {
+  if (kinds.includes('mods')) return 'mods';
+  return kinds.includes('resourcepacks') ? 'rp' : 'sp';
+}
+
+// ฟังก์ชัน render ที่ตรงกับ kind สำหรับส่งเป็น callback หลัง check เสร็จ
+function renderForKind(kind) {
+  return kind === 'mods' ? renderMods : () => renderPackList(kind);
+}
+
+function checkResultFor(filename, kind) {
+  return instancesState.checks[kind]?.find((entry) => entry.filename === filename) ?? null;
+}
+
+function updatesFor(kinds) {
+  return kinds.flatMap((kind) =>
+    (instancesState.checks[kind] ?? []).filter((entry) => entry.updateAvailable)
+  );
+}
+
+function refreshUpdateAllButtons() {
+  for (const panelId of Object.keys(PROGRESS_PANELS)) {
+    if (panelId === 'updates') continue; // ปุ่มของแท็บ UPDATES จัดการโดย renderUpdatesPanel เอง
+    const cfg = PROGRESS_PANELS[panelId];
+    const button = document.getElementById(cfg.updateAll);
+    if (!button) continue;
+    const count = updatesFor(checkKindsForPanel(panelId)).length;
+    button.hidden = count === 0;
+    button.textContent = count > 0 ? `UPDATE ALL (${count})` : 'UPDATE ALL';
+  }
+}
+
+// ป้ายในแถว: UPDATE (มีเวอร์ชีใหม่) / UNVERIFIED (ไฟล์นี้ Modrinth ไม่รู้จัก — ยังไม่ได้ verify)
+function appendCheckOutcome(row, check, kind) {
+  if (check?.updateAvailable && check.latest) {
+    const update = makeText('button', 'btn btn-small', 'UPDATE');
+    update.type = 'button';
+    update.title = `Install ${check.latest.versionNumber ?? 'the latest version'} via Modrinth`;
+    update.addEventListener('click', () => updateInstalledFile(check, kind, update));
+    row.appendChild(update);
+    return;
+  }
+  if (check?.status === 'unmatched') {
+    const flag = makeText('span', 'mod-flag', 'UNVERIFIED');
+    flag.title = "SHA-1 hash not found in Modrinth's catalog — installed manually or not on Modrinth";
+    row.appendChild(flag);
+    return;
+  }
+  if (check?.status === 'incompatible') {
+    const flag = makeText('span', 'upd-status s-bad', 'NOT COMPATIBLE');
+    flag.title = 'No release on Modrinth supports this instance\u2019s Minecraft version';
+    row.appendChild(flag);
+  }
+}
+
+// แปลง progress จาก server (phase/current/total) เป็นเปอร์เซ็นต์หลอด
+function progressPercent(phase, current, total) {
+  const ratio = total > 0 ? Math.min(Math.max(current / total, 0), 1) : 0;
+  switch (phase) {
+    case 'start':
+      return 1;
+    case 'scan':
+      return 5;
+    case 'hash':
+      return 10 + 40 * ratio;
+    case 'lookup':
+      return 50 + 20 * ratio;
+    case 'compare':
+      return 70 + 29 * ratio;
+    case 'done':
+    case 'error':
+      return 100;
+    default:
+      return 0;
+  }
+}
+
+const progressHideTimers = {};
+
+function setProgress(panelId, visible, percent = null, message = '') {
+  const cfg = PROGRESS_PANELS[panelId];
+  const wrap = document.getElementById(cfg.wrap);
+  if (!wrap) return;
+  if (visible && progressHideTimers[panelId]) {
+    // ยกเลิกการซ่อนที่รออยู่ — งานใหม่กำลังแสดงผล (กัน timer เก่าปิดหลอดของ run ใหม่)
+    clearTimeout(progressHideTimers[panelId]);
+    delete progressHideTimers[panelId];
+  }
+  wrap.hidden = !visible;
+  if (!visible) return;
+  const fill = document.getElementById(cfg.fill);
+  const label = document.getElementById(cfg.label);
+  if (fill && percent !== null) fill.style.width = `${percent}%`;
+  if (label) label.textContent = message;
+}
+
+function scheduleProgressHide(panelId, delayMs = 600) {
+  if (progressHideTimers[panelId]) clearTimeout(progressHideTimers[panelId]);
+  progressHideTimers[panelId] = setTimeout(() => {
+    delete progressHideTimers[panelId];
+    setProgress(panelId, false);
+  }, delayMs);
+}
+
+function startProgressPoll(instanceId, panelId) {
+  let stopped = false;
+  const timer = setInterval(async () => {
+    if (stopped) return;
+    try {
+      const data = await fetchJson(`/api/instances/${encodeURIComponent(instanceId)}/check-progress`);
+      if (stopped || !data || (data.running === false && data.phase === 'idle')) return;
+      setProgress(panelId, true, progressPercent(data.phase, data.current, data.total), data.message ?? '');
+    } catch {
+      // poll แบบ best-effort — ถ้าพลาดรอบเดียวไม่เป็นไร
+    }
+  }, 200);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
+function maybeAutoCheck(kinds) {
+  const panelId = panelForKinds(kinds);
+  const now = Date.now();
+  if (now - (instancesState.autoCheckAt[panelId] ?? 0) < AUTO_CHECK_MIN_AGE_MS) return;
+  runInstanceCheck(kinds, { render: renderForKind(kinds[kinds.length - 1]) });
+}
+
+async function runInstanceCheck(kinds, { render }) {
+  const instance = instancesState.detail;
+  if (!instance || instancesState.checking) return;
+  const panelId = panelForKinds(kinds);
+  const cfg = PROGRESS_PANELS[panelId];
+  instancesState.checking = true;
+  instancesState.autoCheckAt[panelId] = Date.now();
+
+  const button = document.getElementById(cfg.check);
+  const status = document.getElementById(cfg.status);
+  if (button) button.disabled = true;
+  if (status) {
+    status.hidden = false;
+    status.textContent = 'Checking…';
+  }
+  setProgress(panelId, true, 1, 'Starting…');
+  const stopPoll = startProgressPoll(instance.id, panelId);
+
+  try {
+    // เช็คหลาย kind พร้อมกัน (ทั้ง mods/resourcepacks/shaders) — server มี slot progress ต่อ kind อยู่แล้ว
+    let updateCount = 0;
+    let adoptedCount = 0;
+    let unmatchedCount = 0;
+    await mapConcurrent(kinds, kinds.length, async (kind) => {
+      const result = await postJson(`/api/instances/${encodeURIComponent(instance.id)}/check`, { kind });
+      instancesState.checks[kind] = result.files ?? [];
+      updateCount += result.updateCount ?? 0;
+      adoptedCount += result.adopted?.length ?? 0;
+      unmatchedCount += result.unmatched ?? 0;
+    });
+    if (status) {
+      const parts = [
+        updateCount === 0 ? 'No updates' : `${updateCount} update${updateCount === 1 ? '' : 's'} available`,
+      ];
+      if (adoptedCount > 0) parts.push(`${adoptedCount} file${adoptedCount === 1 ? '' : 's'} matched on Modrinth`);
+      if (unmatchedCount > 0) parts.push(`${unmatchedCount} unverified`);
+      status.textContent = parts.join(' · ');
+    }
+    setProgress(panelId, true, 100, 'Done');
+    toast(updateCount === 0 ? 'Everything is up to date' : `${updateCount} update${updateCount === 1 ? '' : 's'} available`);
+    render();
+    refreshUpdateAllButtons();
+  } catch (err) {
+    if (status) {
+      status.hidden = false;
+      status.textContent = err.message;
+    }
+    toast(err.message, { error: true });
+  } finally {
+    stopPoll();
+    instancesState.checking = false;
+    if (button) button.disabled = false;
+    scheduleProgressHide(panelId, 600);
+  }
+}
+
+// ติดตั้งเวอร์ชีใหม่ทับ → ลบไฟล์ชื่อเก่าถ้าเวอร์ชีใหม่ใช้ชื่อไฟล์ต่างออกไป (ไม่ reload — ผู้เรียกจัดการเอง)
+async function applyUpdate(check, kind) {
+  const instance = instancesState.detail;
+  if (!instance || !check?.latest?.versionId) return null;
+  const isMod = kind === 'mods';
+  const base = `/api/instances/${encodeURIComponent(instance.id)}`;
+  const result = await postJson(`${base}${isMod ? '/mods' : '/packs'}`, {
+    versionId: check.latest.versionId,
+    force: true,
+    ...(isMod ? {} : { kind }),
+  });
+  const newNames = new Set((result.files ?? []).map((file) => file.filename));
+  if (!newNames.has(check.filename)) {
+    await deleteJson(
+      `${base}${isMod ? '/mods' : '/packs'}/${encodeURIComponent(check.filename)}${isMod ? '' : `?kind=${kind}`}`
+    );
+  }
+  return result;
+}
+
+async function updateInstalledFile(check, kind, button) {
+  if (!instancesState.detail || !check?.latest?.versionId) return;
+  const isMod = kind === 'mods';
+  const panelId = panelForKind(kind);
+  button.disabled = true;
+  button.textContent = '…';
+  try {
+    await applyUpdate(check, kind);
+    toast(`Updated ${check.filename} → ${check.latest.versionNumber}`);
+    if (isMod) {
+      await loadMods();
+    } else {
+      await loadPackList(kind);
+    }
+    await loadInstances({ silent: true });
+    // เช็คซ้ำทันทีเพื่อล้างป้าย UPDATE ของไฟล์ที่เพิ่งอัปเดต (ข้าม throttle ของ auto-check)
+    instancesState.autoCheckAt[panelId] = 0;
+    await runInstanceCheck([kind], { render: renderForKind(kind) });
+  } catch (err) {
+    toast(err.message, { error: true });
+    button.disabled = false;
+    button.textContent = 'UPDATE';
+  }
+}
+
+// อัปเดตทุกไฟล์ที่มีเวอร์ชีใหม่ในครั้งเดียว (แบ่งชุดเท่าจำนวน CPU → server ขนานดาวน์โหลดในชุด)
+async function runUpdateAll(kinds) {
+  const instance = instancesState.detail;
+  if (!instance || instancesState.checking) return;
+  const panelId = panelForKinds(kinds);
+  const cfg = PROGRESS_PANELS[panelId];
+  const targets = kinds.flatMap((kind) =>
+    (instancesState.checks[kind] ?? [])
+      .filter((entry) => entry.updateAvailable)
+      .map((check) => ({ check, kind }))
+  );
+  if (targets.length === 0) return;
+
+  instancesState.checking = true;
+  const checkBtn = document.getElementById(cfg.check);
+  const updateBtn = document.getElementById(cfg.updateAll);
+  const status = document.getElementById(cfg.status);
+  if (checkBtn) checkBtn.disabled = true;
+  if (updateBtn) updateBtn.disabled = true;
+
+  const failures = [];
+  const { done, failures: batchFailures } = await applyUpdatesInBatches(targets, (processed, total, label) => {
+    if (status) {
+      status.hidden = false;
+      status.textContent = `${label}…`;
+    }
+    setProgress(panelId, true, Math.round((processed / Math.max(total, 1)) * 90), label);
+  });
+  failures.push(...batchFailures);
+  setProgress(panelId, true, 100, 'Done');
+
+  try {
+    for (const kind of kinds) {
+      if (kind === 'mods') {
+        const refreshed = await fetchJson(`/api/instances/${encodeURIComponent(instance.id)}`);
+        instancesState.detail = refreshed.instance;
+        renderInstanceDetail();
+        await loadMods();
+        await loadInstances({ silent: true });
+      } else {
+        await loadPackList(kind);
+      }
+    }
+  } catch (err) {
+    failures.push(err.message);
+  }
+
+  if (status) {
+    status.hidden = false;
+    status.textContent = failures.length > 0
+      ? `${done} updated · ${failures.length} failed`
+      : `${done} updated`;
+  }
+  toast(
+    failures.length > 0
+      ? `Updated ${done}, failed ${failures.length}`
+      : `Updated ${done} file${done === 1 ? '' : 's'}`,
+    { error: failures.length > 0 }
+  );
+  instancesState.checking = false;
+  if (checkBtn) checkBtn.disabled = false;
+  if (updateBtn) updateBtn.disabled = false;
+  // โชว์ "N updated" ครู่หนึ่งก่อนเช็คสถานะซ้ำรอบสุดท้าย
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  // จบแล้วเช็คซ้ำรอบหนึ่งเพื่อ sync สถานะล่าสุด (เจอ checking=false แล้วจึงรันได้)
+  await runInstanceCheck(kinds, { render: renderForKind(kinds[kinds.length - 1]) });
+}
+
+// ---------- Unified update check (แท็บ UPDATES: เช็ค mods + shaders ในที่เดียว) ----------
+// mods + shaders → อัปเดตให้หมดในปุ่มเดียว / resource packs → เช็ค+อัปเดตในแท็บ Resources แยกต่างหาก
+const UPD_KIND_GROUPS = [
+  { kind: 'mods', label: 'Mods' },
+  { kind: 'shaderpacks', label: 'Shaders' },
+];
+// server มีแค่ mods — resourcepacks/shaders ไม่มีบน server อย่าไปเช็ค/โชว์
+function activeUpdGroups() {
+  if (instancesState.detail?.type === 'server') return UPD_KIND_GROUPS.filter((group) => group.kind === 'mods');
+  return UPD_KIND_GROUPS;
+}
+// หน้า UPDATES เหลือเฉพาะ mods + shaders — resource packs ดูแลในแท็บ Resources (ไม่สน MC version ด้วย)
+const UPD_KIND_LABELS = { mods: 'mods', resourcepacks: 'resource packs', shaderpacks: 'shaders' };
+
+function updateStatusInfo(check) {
+  if (check.status === 'unmatched') {
+    return { label: 'UNVERIFIED', cls: 's-muted', title: "SHA-1 hash not found in Modrinth's catalog" };
+  }
+  if (check.status === 'unavailable') {
+    return { label: 'CHECK FAILED', cls: 's-muted', title: 'Could not reach Modrinth for this file — run CHECK UPDATES again' };
+  }
+  if (check.status === 'incompatible') {
+    return { label: 'NOT COMPATIBLE', cls: 's-bad', title: 'No Modrinth release matches the selected version' };
+  }
+  if (check.updateAvailable && check.latest) {
+    return { label: `UPDATE → ${check.latest.versionNumber ?? '?'}`, cls: 's-update', title: 'A newer version is available on Modrinth' };
+  }
+  return { label: 'UP TO DATE', cls: 's-ok', title: '' };
+}
+
+function updatesSummary() {
+  const summary = { upToDate: 0, updates: 0, incompatible: 0, unavailable: 0, unmatched: 0 };
+  // นับเฉพาะกลุ่มของหน้า UPDATES — checks ของแท็บอื่น (เช่น resource packs) ห้ามปน
+  for (const group of activeUpdGroups()) {
+    for (const check of instancesState.checks[group.kind] ?? []) {
+      if (check.status === 'unmatched') summary.unmatched += 1;
+      else if (check.status === 'unavailable') summary.unavailable += 1;
+      else if (check.status === 'incompatible') summary.incompatible += 1;
+      else if (check.updateAvailable) summary.updates += 1;
+      else summary.upToDate += 1;
+    }
+  }
+  return summary;
+}
+
+// ปุ่มยืนยันตรงกลาง: UPDATE SELECTED (n) เมื่อมีของที่ติ๊กไว้ / SWITCH TO <v> เมื่อเลือกเป้าหมายใหม่แต่ไม่มีอะไรอัปเดต
+function updateConfirmButtonLabel() {
+  const button = document.getElementById('updConfirmBtn');
+  if (!button) return;
+  const selected = document.querySelectorAll('#updList .upd-skip:checked').length;
+  const instance = instancesState.detail;
+  const target = instancesState.updatesTarget;
+  const versionChanged = Boolean(instance && target && target !== instance.minecraftVersion);
+  const hasChecks = activeUpdGroups().some((group) => (instancesState.checks[group.kind] ?? []).length > 0);
+  if (selected > 0) {
+    button.hidden = false;
+    button.textContent = `UPDATE SELECTED (${selected})`;
+  } else if (versionChanged && hasChecks) {
+    button.hidden = false;
+    button.textContent = `SWITCH TO ${target}`;
+  } else {
+    button.hidden = true;
+    button.textContent = 'UPDATE SELECTED';
+  }
+}
+
+function resetUpdatesPanel({ keepTarget = false } = {}) {
+  const status = document.getElementById('updCheckStatus');
+  if (status) {
+    status.hidden = true;
+    status.textContent = '';
+  }
+  const pill = document.getElementById('updCountPill');
+  if (pill) pill.textContent = 'Not checked';
+  const list = document.getElementById('updList');
+  if (list) list.replaceChildren(makeText('p', 'muted', 'No scan yet — press CHECK UPDATES to scan mods and shaders for the selected version.'));
+  const confirmBtn = document.getElementById('updConfirmBtn');
+  if (confirmBtn) {
+    confirmBtn.hidden = true;
+    confirmBtn.disabled = false;
+  }
+  const checkBtn = document.getElementById('updCheckBtn');
+  if (checkBtn) checkBtn.disabled = false;
+  if (!keepTarget) {
+    // keepTarget = เช็คแล้วไม่มีไฟล์เลย (คนละกรณีกับสลับ instance) → เวอร์ชั่นเป้าหมายที่ผู้ใช้เลือกไว้ต้องไม่ถูกรีเซ็ต
+    const versionInput = document.getElementById('updVersion');
+    if (versionInput) delete versionInput.dataset.dirty; // instance ใหม่/บันทึกแล้ว → ให้ fill ตั้งค่าเป็นเวอร์ชั่นปัจจุบันเองได้
+    instancesState.updatesTarget = null;
+  }
+  setProgress('updates', false);
+}
+
+function renderUpdatesPanel() {
+  const list = document.getElementById('updList');
+  const pill = document.getElementById('updCountPill');
+  const status = document.getElementById('updCheckStatus');
+  if (!list) return;
+
+  const anyChecked = activeUpdGroups().some((group) => (instancesState.checks[group.kind] ?? []).length > 0);
+  if (!anyChecked) {
+    resetUpdatesPanel({ keepTarget: true });
+    return;
+  }
+
+  const summary = updatesSummary();
+  if (pill) {
+    pill.textContent = summary.updates > 0
+      ? `${summary.updates} update${summary.updates === 1 ? '' : 's'}`
+      : summary.incompatible > 0
+        ? `${summary.incompatible} incompatible`
+        : 'UP TO DATE';
+  }
+  if (status) {
+    status.hidden = false;
+    const parts = [];
+    if (summary.upToDate) parts.push(`${summary.upToDate} up to date`);
+    if (summary.updates) parts.push(`${summary.updates} update${summary.updates === 1 ? '' : 's'}`);
+    if (summary.incompatible) parts.push(`${summary.incompatible} not compatible`);
+    if (summary.unavailable) parts.push(`${summary.unavailable} check failed`);
+    if (summary.unmatched) parts.push(`${summary.unmatched} unverified`);
+    let text = parts.length > 0 ? parts.join(' · ') : 'Nothing checked';
+    const instance = instancesState.detail;
+    if (instance && instancesState.updatesTarget && instancesState.updatesTarget !== instance.minecraftVersion) {
+      text += ` — targeting ${instancesState.updatesTarget} (not saved)`;
+    }
+    status.textContent = text;
+  }
+
+  list.replaceChildren();
+  for (const group of activeUpdGroups()) {
+    const checks = instancesState.checks[group.kind] ?? [];
+    if (checks.length === 0) continue;
+    list.appendChild(makeText('h4', 'upd-group-title', `${group.label} (${checks.length})`));
+    for (const check of checks) {
+      const row = document.createElement('div');
+      row.className = 'upd-row';
+      const isRemoval = check.status === 'incompatible';
+      if (check.updateAvailable || isRemoval) {
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.className = 'upd-skip';
+        box.checked = true;
+        box.dataset.filename = check.filename;
+        box.dataset.kind = group.kind;
+        box.title = isRemoval
+          ? 'Uncheck to keep this file — confirming removes it (kept for restore)'
+          : 'Uncheck to skip this file when confirming the update';
+        row.appendChild(box);
+      }
+      row.appendChild(makeText('span', 'upd-name', check.filename));
+      const info = updateStatusInfo(check);
+      const chip = makeText('span', `upd-status ${info.cls}`, info.label);
+      if (info.title) chip.title = info.title;
+      row.appendChild(chip);
+      if (isRemoval) {
+        const remove = makeText('button', 'btn btn-danger btn-small', 'REMOVE');
+        remove.type = 'button';
+        remove.addEventListener('click', () => removeIncompatibleFile(check, group.kind, remove));
+        row.appendChild(remove);
+      } else if (check.updateAvailable && check.latest) {
+        const update = makeText('button', 'btn btn-small', 'UPDATE');
+        update.type = 'button';
+        update.addEventListener('click', async () => {
+          update.disabled = true;
+          try {
+            await applyUpdate(check, group.kind);
+            toast(`Updated ${check.filename} → ${check.latest.versionNumber}`);
+            instancesState.autoCheckAt.updates = 0;
+            await runUnifiedCheck();
+            refreshUpdateAllButtons();
+          } catch (err) {
+            toast(err.message, { error: true });
+            update.disabled = false;
+          }
+        });
+        row.appendChild(update);
+      }
+      list.appendChild(row);
+    }
+  }
+
+  updateConfirmButtonLabel();
+}
+
+// ลบไฟล์ที่ไม่รองรับทีละไฟล์จากแถว NOT COMPATIBLE — ย้ายไป .removed/ จดจำไว้กู้คืนได้
+async function removeIncompatibleFile(check, kind, button) {
+  const instance = instancesState.detail;
+  if (!instance) return;
+  if (instancesState.checking) {
+    toast('Another check is running — try again in a moment.', { error: true });
+    return;
+  }
+  button.disabled = true;
+  try {
+    await trashRemovedFile(instance.id, check.filename, kind, instancesState.updatesTarget ?? instance.minecraftVersion, 'manual');
+    dropCheck(kind, check.filename);
+    toast(`Removed ${check.filename} — restorable on this page`);
+    renderUpdatesPanel();
+    refreshUpdateAllButtons();
+    loadRemoved();
+    await loadInstances({ silent: true });
+  } catch (err) {
+    toast(err.message, { error: true });
+    button.disabled = false;
+  }
+}
+
+function dropCheck(kind, filename) {
+  const arr = instancesState.checks[kind] ?? [];
+  const idx = arr.findIndex((entry) => entry.filename === filename);
+  if (idx >= 0) arr.splice(idx, 1);
+}
+
+async function trashRemovedFile(instanceId, filename, kind, target = null, reason = 'incompatible') {
+  await postJson(`/api/instances/${encodeURIComponent(instanceId)}/removed`, {
+    kind,
+    filename,
+    reason,
+    targetVersion: target ?? instancesState.updatesTarget ?? instancesState.detail?.minecraftVersion ?? null,
+  });
+}
+
+// โหลดรายการไฟล์ที่ลบ + ถ้าเวอร์ชั่นเป้าหมายรองรับไฟล์ที่เคย incompatible แล้ว → auto-restore ให้เอง
+// (เหตุผล 'manual' ที่ผู้ใช้กด REMOVE เอง → ไม่แตะ รอผู้ใช้กด RESTORE เอง)
+async function loadRemoved({ auto = true } = {}) {
+  const instance = instancesState.detail;
+  if (!instance) return;
+  const target = instancesState.updatesTarget ?? instance.minecraftVersion;
+  try {
+    const data = await fetchJson(
+      `/api/instances/${encodeURIComponent(instance.id)}/removed?minecraftVersion=${encodeURIComponent(target)}`,
+    );
+    instancesState.removed = Array.isArray(data.removed) ? data.removed : [];
+  } catch {
+    instancesState.removed = [];
+  }
+  renderRemoved();
+  if (auto) await autoRestoreSupported(target);
+}
+
+let autoRestoringRemoved = false;
+
+// ย้ายไฟล์จาก .removed กลับเข้า instance (ทีละรายการ — server serialize ต่อ instance อยู่แล้ว)
+// แล้วrefresh รายการ mods/packs ให้ตรง คืน { restored, failures }
+async function restoreRemovedEntries(entries) {
+  const instance = instancesState.detail;
+  if (!instance || entries.length === 0) return { restored: 0, failures: [] };
+  let restored = 0;
+  const failures = [];
+  for (const entry of entries) {
+    try {
+      await postJson(`/api/instances/${encodeURIComponent(instance.id)}/removed/restore`, {
+        kind: entry.kind,
+        filename: entry.filename,
+      });
+      restored += 1;
+    } catch (err) {
+      failures.push(`${entry.filename}: ${err.message}`);
+    }
+  }
+  if (restored > 0) {
+    if (entries.some((entry) => entry.kind === 'mods')) await loadMods().catch(() => {});
+    const packKinds = [...new Set(entries.filter((entry) => entry.kind !== 'mods').map((entry) => entry.kind))];
+    for (const kind of packKinds) await loadPackList(kind).catch(() => {});
+    await loadInstances({ silent: true });
+  }
+  return { restored, failures };
+}
+
+async function autoRestoreSupported(target) {
+  if (autoRestoringRemoved) return;
+  const instance = instancesState.detail;
+  if (!instance) return;
+  const candidates = (instancesState.removed ?? []).filter(
+    (entry) => entry.supported === true && entry.reason === 'incompatible',
+  );
+  if (candidates.length === 0) return;
+  autoRestoringRemoved = true;
+  // ถอดออกจาก list ทันทีก่อนย้ายไฟล์กลับ กัน restore ซ้ำสองรอบ
+  instancesState.removed = (instancesState.removed ?? []).filter((entry) => !candidates.includes(entry));
+  renderRemoved();
+  try {
+    const { restored, failures } = await restoreRemovedEntries(candidates);
+    if (restored > 0) toast(`Auto-restored ${restored} file${restored === 1 ? '' : 's'} now supported on ${target}`);
+    if (failures.length > 0) toast(failures.join(', '), { error: true });
+    await loadRemoved({ auto: false });
+  } finally {
+    autoRestoringRemoved = false;
+  }
+}
+
+function renderRemoved() {
+  const wrap = document.getElementById('updRemoved');
+  const title = document.getElementById('updRemovedTitle');
+  const list = document.getElementById('updRemovedList');
+  const restoreAllBtn = document.getElementById('updRestoreAllBtn');
+  if (!wrap || !list) return;
+  const items = instancesState.removed ?? [];
+  wrap.hidden = items.length === 0;
+  if (restoreAllBtn) restoreAllBtn.disabled = items.length === 0;
+  if (items.length === 0) {
+    list.replaceChildren();
+    if (title) title.textContent = 'Removed — restorable';
+    return;
+  }
+  if (title) title.textContent = `Removed — restorable (${items.length})`;
+  list.replaceChildren();
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.className = 'upd-row';
+    row.appendChild(makeText('span', 'upd-name', item.filename));
+    const reasonText =
+      item.reason === 'manual'
+        ? 'removed by you'
+        : item.reason === 'incompatible'
+          ? item.targetVersion
+            ? `incompatible for ${item.targetVersion}`
+            : 'incompatible'
+          : item.reason ?? 'removed';
+    row.appendChild(makeText('span', 'upd-status', reasonText));
+    const restore = makeText('button', 'btn btn-small', 'RESTORE');
+    restore.type = 'button';
+    restore.addEventListener('click', async () => {
+      if (!instancesState.detail) return;
+      restore.disabled = true;
+      try {
+        const { restored, failures } = await restoreRemovedEntries([item]);
+        if (restored > 0) toast(`Restored ${item.filename}`);
+        if (failures.length > 0) toast(failures.join(', '), { error: true });
+        await loadRemoved();
+      } catch (err) {
+        toast(err.message, { error: true });
+        restore.disabled = false;
+      }
+    });
+    row.appendChild(restore);
+    list.appendChild(row);
+  }
+}
+
+function maybeRunUnifiedCheck() {
+  if (!instancesState.detail) return;
+  const now = Date.now();
+  const hasData = activeUpdGroups().some((group) => (instancesState.checks[group.kind] ?? []).length > 0);
+  if (hasData && now - (instancesState.autoCheckAt.updates ?? 0) < AUTO_CHECK_MIN_AGE_MS) {
+    renderUpdatesPanel();
+    return;
+  }
+  runUnifiedCheck();
+}
+
+async function runUnifiedCheck() {
+  const instance = instancesState.detail;
+  if (!instance) return;
+  if (instancesState.checking) {
+    // มี check อื่นวิ่งอยู่ (เช่น auto-check แท็บ mods/packs) → บอกผู้ใช้ตรง ๆ แทนการนิ่งเฉย
+    const busyStatus = document.getElementById(PROGRESS_PANELS.updates.status);
+    if (busyStatus) {
+      busyStatus.hidden = false;
+      busyStatus.textContent = 'Another check is running — try again in a moment.';
+    }
+    return;
+  }
+  // เวอร์ชั่นเป้าหมายจาก dropdown (ค่าเริ่มต้น = เวอร์ชั่นปัจจุบันของ instance) — ยังไม่บันทึกลง instance
+  const target = document.getElementById('updVersion')?.value.trim() || instance.minecraftVersion;
+  instancesState.checking = true;
+  instancesState.updatesTarget = target;
+  instancesState.autoCheckAt.updates = Date.now();
+
+  const cfg = PROGRESS_PANELS.updates;
+  const button = document.getElementById(cfg.check);
+  const status = document.getElementById(cfg.status);
+  const confirmBtn = document.getElementById('updConfirmBtn');
+  if (button) button.disabled = true;
+  if (confirmBtn) confirmBtn.disabled = true;
+  updatesVersionDropdown?.setDisabled(true);
+  if (status) {
+    status.hidden = false;
+    status.textContent = 'Checking…';
+  }
+  setProgress('updates', true, 1, 'Starting…');
+  const stopPoll = startProgressPoll(instance.id, 'updates');
+
+  try {
+    // เช็คทุก kind พร้อมกัน — server เก็บ progress แยก slot ต่อ kind อยู่แล้ว (กันชนเฉพาะ kind เดิมซ้ำ)
+    const kindLabel = activeUpdGroups().map((group) => UPD_KIND_LABELS[group.kind]).join(' + ');
+    if (status) {
+      status.hidden = false;
+      status.textContent = `Checking ${kindLabel} for ${target}…`;
+    }
+    await mapConcurrent(activeUpdGroups(), activeUpdGroups().length, async (group) => {
+      if (instancesState.detail?.id !== instance.id) return; // เปลี่ยน instance ระหว่างทาง → หยุดเขียนผลลง UI
+      const result = await postJson(`/api/instances/${encodeURIComponent(instance.id)}/check`, {
+        kind: group.kind,
+        minecraftVersion: target,
+      });
+      if (instancesState.detail?.id !== instance.id) return;
+      instancesState.checks[group.kind] = result.files ?? [];
+      instancesState.autoCheckAt[panelForKind(group.kind)] = Date.now();
+    });
+    setProgress('updates', true, 100, 'Done');
+    renderUpdatesPanel();
+    refreshUpdateAllButtons();
+    const summary = updatesSummary();
+    const forTarget = target !== instance.minecraftVersion ? ` for ${target}` : '';
+    toast(
+      summary.updates > 0
+        ? `${summary.updates} update${summary.updates === 1 ? '' : 's'} available${forTarget}`
+        : `Everything is up to date${forTarget}`
+    );
+    // target เปลี่ยน → refresh รายการไฟล์ที่ลบ + auto-restore ตัวที่เป้าหมายรองรับแล้ว
+    await loadRemoved();
+  } catch (err) {
+    if (status) {
+      status.hidden = false;
+      status.textContent = err.message;
+    }
+    toast(err.message, { error: true });
+  } finally {
+    stopPoll();
+    instancesState.checking = false;
+    if (button) button.disabled = false;
+    if (confirmBtn) confirmBtn.disabled = false;
+    updatesVersionDropdown?.setDisabled(false);
+    scheduleProgressHide('updates', 600);
+  }
+}
+
+// ทำงานหลายตัวพร้อมกันแบบมีเพดาน (อัปเดตหลายไฟล์คู่ขนานแทนการรอทีละไฟล์)
+async function mapConcurrent(items, limit, worker) {
+  const queue = [...items];
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, queue.length)) }, async () => {
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (item !== undefined) await worker(item);
+    }
+  });
+  await Promise.all(runners);
+}
+
+const UPDATE_CONCURRENCY =
+  typeof navigator === 'object' && Number.isInteger(navigator.hardwareConcurrency) && navigator.hardwareConcurrency > 0
+    ? navigator.hardwareConcurrency
+    : 4;
+
+// อัปเดตหลายไฟล์เป็นชุด ๆ (ชุดละ = จำนวน CPU) — ยิงทีละ request ให้ server ขนานดาวน์โหลดเองภายในชุด
+async function applyUpdatesInBatches(targets, report) {
+  const instance = instancesState.detail;
+  const failures = [];
+  let done = 0;
+  const total = targets.length;
+  if (total === 0) return { done, failures };
+
+  const groups = new Map();
+  for (const target of targets) {
+    const key = target.kind === 'mods' ? 'mods' : `packs:${target.kind}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(target);
+  }
+
+  for (const [key, list] of groups) {
+    const isMod = key === 'mods';
+    const kind = isMod ? null : key.slice('packs:'.length);
+    const endpoint = `/api/instances/${encodeURIComponent(instance.id)}/${isMod ? 'mods' : 'packs'}`;
+    for (let i = 0; i < list.length; i += UPDATE_CONCURRENCY) {
+      const chunk = list.slice(i, i + UPDATE_CONCURRENCY);
+      const label = `Updating ${done + 1}/${total} — ${chunk[0].check.filename}`;
+      report?.(done + failures.length, total, label);
+      let result;
+      try {
+        result = await postJson(endpoint, {
+          versionIds: chunk.map((target) => target.check.latest.versionId),
+          force: true,
+          ...(isMod ? {} : { kind }),
+        });
+      } catch (err) {
+        for (const target of chunk) failures.push(`${target.check.filename}: ${err.message}`);
+        continue;
+      }
+      const byId = new Map((result.results ?? []).map((entry) => [entry.versionId, entry]));
+      for (const target of chunk) {
+        const entry = byId.get(target.check.latest.versionId);
+        if (!entry) {
+          failures.push(`${target.check.filename}: missing install result`);
+          continue;
+        }
+        if (entry.ok !== true) {
+          failures.push(`${target.check.filename}: ${entry.error ?? 'install failed'}`);
+          continue;
+        }
+        const newNames = new Set((entry.files ?? []).map((file) => file.filename));
+        if (!newNames.has(target.check.filename)) {
+          // เวอร์ชีใหม่ใช้ชื่อไฟล์ต่างออกไป → ลบชื่อเก่าทิ้ง (เหมือน applyUpdate เดี่ยว)
+          try {
+            await deleteJson(
+              `${endpoint}/${encodeURIComponent(target.check.filename)}${isMod ? '' : `?kind=${kind}`}`
+            );
+          } catch (err) {
+            failures.push(`${target.check.filename}: ${err.message}`);
+            continue;
+          }
+        }
+        done += 1;
+      }
+      report?.(done + failures.length, total, `Updated ${done}/${total}`);
+    }
+  }
+  return { done, failures };
+}
+
+// ยืนยัน: อัปเดตทุกไฟล์ที่ยังติ๊กค้างไว้ (ไม่ติ๊ก = ข้าม) — ถ้า dropdown ชี้เวอร์ชั่น ≠ ของ instance จะบันทึกเป้าหมายลง instance ด้วย
+async function applySelectedUpdates() {
+  const instance = instancesState.detail;
+  if (!instance || instancesState.checking) return;
+
+  const target = instancesState.updatesTarget ?? instance.minecraftVersion;
+  const versionChanged = target !== instance.minecraftVersion;
+  const selected = [...document.querySelectorAll('#updList .upd-skip:checked')]
+    .map((box) => {
+      const check = (instancesState.checks[box.dataset.kind] ?? []).find(
+        (entry) => entry.filename === box.dataset.filename,
+      );
+      if (!check) return null;
+      if (check.status === 'incompatible') return { check, kind: box.dataset.kind, mode: 'trash' };
+      if (check.updateAvailable && check.latest) return { check, kind: box.dataset.kind, mode: 'update' };
+      return null;
+    })
+    .filter(Boolean);
+  const targets = selected.filter((action) => action.mode === 'update');
+  const removals = selected.filter((action) => action.mode === 'trash');
+  if (targets.length === 0 && removals.length === 0 && !versionChanged) {
+    toast('Nothing to update');
+    return;
+  }
+
+  instancesState.checking = true;
+  const cfg = PROGRESS_PANELS.updates;
+  const button = document.getElementById(cfg.check);
+  const confirmBtn = document.getElementById('updConfirmBtn');
+  const status = document.getElementById(cfg.status);
+  if (button) button.disabled = true;
+  if (confirmBtn) confirmBtn.disabled = true;
+  updatesVersionDropdown?.setDisabled(true);
+
+  let done = 0;
+  let removed = 0;
+  let finished = 0;
+  const totalWork = targets.length + removals.length;
+  const failures = [];
+  const showProgress = (label) => {
+    if (status) {
+      status.hidden = false;
+      status.textContent = `${label}…`;
+    }
+    setProgress('updates', true, Math.round((finished / Math.max(totalWork, 1)) * 90), label);
+  };
+  // ลบไฟล์ที่ไม่รองรับก่อน (งานเบาก็ขนานตามจำนวน CPU) แล้วค่อยอัปเดตเป็นชุด
+  await mapConcurrent(removals, UPDATE_CONCURRENCY, async (action) => {
+    const { check, kind } = action;
+    showProgress(`Removing ${check.filename}`);
+    try {
+      await trashRemovedFile(instance.id, check.filename, kind, target);
+      dropCheck(kind, check.filename);
+      removed += 1;
+    } catch (err) {
+      failures.push(`${check.filename}: ${err.message}`);
+    }
+    finished += 1;
+    showProgress(`Removing ${check.filename}`);
+  });
+  const batch = await applyUpdatesInBatches(targets, (processed, total, label) => {
+    finished = removals.length + Math.min(processed, targets.length);
+    showProgress(label);
+  });
+  done = batch.done;
+  failures.push(...batch.failures);
+
+  try {
+    const refreshed = await fetchJson(`/api/instances/${encodeURIComponent(instance.id)}`);
+    instancesState.detail = refreshed.instance;
+    renderInstanceDetail();
+    await loadInstances({ silent: true });
+  } catch (err) {
+    failures.push(err.message);
+  }
+
+  // เลือกเป้าหมายใหม่ → บันทึกลง instance พร้อมไฟล์ที่อัปเดต (ยืนยันครั้งเดียวจบ)
+  let switched = false;
+  if (versionChanged) {
+    try {
+      const patched = await patchJson(`/api/instances/${encodeURIComponent(instance.id)}`, {
+        minecraftVersion: target,
+      });
+      instancesState.detail = patched.instance;
+      switched = true;
+    } catch (err) {
+      failures.push(err.message);
+    }
+  }
+
+  setProgress('updates', true, 100, 'Done');
+  const resultParts = [];
+  if (done > 0) resultParts.push(`${done} updated`);
+  if (removed > 0) resultParts.push(`${removed} removed`);
+  if (switched) resultParts.push(`Minecraft ${target} saved`);
+  if (failures.length > 0) resultParts.push(`${failures.length} failed`);
+  if (status) {
+    status.hidden = false;
+    status.textContent = resultParts.length > 0 ? resultParts.join(' · ') : 'Nothing to do';
+  }
+  toast(
+    failures.length > 0
+      ? `Updated ${done}, removed ${removed}, failed ${failures.length}`
+      : resultParts.join(' · ') || 'Nothing to update',
+    { error: failures.length > 0 }
+  );
+  if (removed > 0) await loadRemoved();
+
+  if (switched) {
+    // instance ย้ายเวอร์ชั่นแล้ว → ผลเช็คเดิมใช้ไม่ได้ เริ่มใหม่ด้วย current (คือ target ที่เพิ่งบันทึก)
+    instancesState.checks = { mods: [], resourcepacks: [], shaderpacks: [] };
+    instancesState.autoCheckAt = {};
+    resetUpdatesPanel();
+    renderInstanceDetail();
+  }
+  instancesState.checking = false;
+  if (button) button.disabled = false;
+  if (confirmBtn) confirmBtn.disabled = false;
+  updatesVersionDropdown?.setDisabled(false);
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  await runUnifiedCheck();
 }
 
 async function loadMods() {
@@ -879,6 +2246,9 @@ function renderMods() {
       makeText('span', 'mod-name', mod.filename),
       makeText('span', 'mod-size', formatBytes(mod.size))
     );
+    const modCheck = checkResultFor(mod.filename, 'mods');
+    if (!modCheck || modCheck.status !== 'unmatched') appendVersionsButton(row, mod.filename, 'mods');
+    appendCheckOutcome(row, modCheck, 'mods');
     const remove = makeText('button', 'btn btn-danger btn-small', 'REMOVE');
     remove.type = 'button';
     remove.addEventListener('click', async () => {
@@ -897,82 +2267,78 @@ function renderMods() {
   }
 }
 
-async function loadPacks() {
+async function loadPackList(kind) {
   const instance = instancesState.detail;
   if (!instance) return;
+  const list = document.getElementById(kind === 'resourcepacks' ? 'rpList' : 'spList');
+  if (list) list.replaceChildren(makeText('p', 'muted', 'Loading…'));
 
-  for (const kind of ['resourcepacks', 'shaderpacks']) {
-    const list = document.getElementById(kind === 'resourcepacks' ? 'rpList' : 'spList');
-    if (list) list.replaceChildren(makeText('p', 'muted', 'Loading…'));
-    try {
-      const data = await fetchJson(
-        `/api/instances/${encodeURIComponent(instance.id)}/packs?kind=${kind}`
-      );
-      instancesState.packs[kind] = data.packs ?? [];
-    } catch (err) {
-      instancesState.packs[kind] = [];
-      if (list) list.replaceChildren(makeText('p', 'muted', err.message));
-    }
+  try {
+    const data = await fetchJson(
+      `/api/instances/${encodeURIComponent(instance.id)}/packs?kind=${kind}`
+    );
+    instancesState.packs[kind] = data.packs ?? [];
+  } catch (err) {
+    instancesState.packs[kind] = [];
+    if (list) list.replaceChildren(makeText('p', 'muted', err.message));
+    return;
   }
-  renderPacks();
+  renderPackList(kind);
 }
 
-function renderPacks() {
-  const total =
-    instancesState.packs.resourcepacks.length + instancesState.packs.shaderpacks.length;
-  const pill = document.getElementById('packCountPill');
-  if (pill) pill.textContent = `${total} files`;
+function renderPackList(kind) {
+  const isResource = kind === 'resourcepacks';
+  const list = document.getElementById(isResource ? 'rpList' : 'spList');
+  const count = document.getElementById(isResource ? 'rpCountPill' : 'spCountPill');
+  const files = instancesState.packs[kind];
+  if (count) count.textContent = String(files.length);
+  if (!list) return;
+  list.replaceChildren();
 
-  for (const kind of ['resourcepacks', 'shaderpacks']) {
-    const list = document.getElementById(kind === 'resourcepacks' ? 'rpList' : 'spList');
-    const count = document.getElementById(kind === 'resourcepacks' ? 'rpCountPill' : 'spCountPill');
-    const files = instancesState.packs[kind];
-    if (count) count.textContent = String(files.length);
-    if (!list) continue;
-    list.replaceChildren();
+  if (files.length === 0) {
+    list.appendChild(
+      makeText(
+        'p',
+        'muted',
+        isResource
+          ? 'No resource packs installed in this instance.'
+          : 'No shaders installed in this instance.'
+      )
+    );
+    return;
+  }
 
-    if (files.length === 0) {
-      list.appendChild(
-        makeText(
-          'p',
-          'muted',
-          kind === 'resourcepacks'
-            ? 'No resource packs installed in this instance.'
-            : 'No shaders installed in this instance.'
-        )
-      );
-      continue;
-    }
-
-    for (const file of files) {
-      const row = document.createElement('div');
-      row.className = 'mod-row';
-      row.append(
-        makeText('span', 'mod-name', file.filename),
-        makeText('span', 'mod-size', formatBytes(file.size))
-      );
-      const remove = makeText('button', 'btn btn-danger btn-small', 'REMOVE');
-      remove.type = 'button';
-      remove.addEventListener('click', async () => {
-        try {
-          await deleteJson(
-            `/api/instances/${encodeURIComponent(instancesState.detail.id)}/packs/${encodeURIComponent(file.filename)}?kind=${kind}`
-          );
-          toast(`${file.filename} removed`);
-          await loadPacks();
-        } catch (err) {
-          toast(err.message, { error: true });
-        }
-      });
-      row.appendChild(remove);
-      list.appendChild(row);
-    }
+  for (const file of files) {
+    const row = document.createElement('div');
+    row.className = 'mod-row';
+    row.append(
+      makeText('span', 'mod-name', file.filename),
+      makeText('span', 'mod-size', formatBytes(file.size))
+    );
+    const fileCheck = checkResultFor(file.filename, kind);
+    if (!fileCheck || fileCheck.status !== 'unmatched') appendVersionsButton(row, file.filename, kind);
+    appendCheckOutcome(row, fileCheck, kind);
+    const remove = makeText('button', 'btn btn-danger btn-small', 'REMOVE');
+    remove.type = 'button';
+    remove.addEventListener('click', async () => {
+      try {
+        await deleteJson(
+          `/api/instances/${encodeURIComponent(instancesState.detail.id)}/packs/${encodeURIComponent(file.filename)}?kind=${kind}`
+        );
+        toast(`${file.filename} removed`);
+        await loadPackList(kind);
+      } catch (err) {
+        toast(err.message, { error: true });
+      }
+    });
+    row.appendChild(remove);
+    list.appendChild(row);
   }
 }
 
 function setupInstanceDetail() {
   document.getElementById('instanceBackBtn')?.addEventListener('click', () => {
-    location.hash = '#instances';
+    location.hash = instancesState.detail?.type === 'server' ? '#servers' : '#instances';
   });
 
   document.getElementById('iPlayBtn')?.addEventListener('click', async (event) => {
@@ -997,32 +2363,147 @@ function setupInstanceDetail() {
     }
   });
 
-  document.getElementById('iModsBtn')?.addEventListener('click', () => {
-    const next = instancesState.tab === 'mods' ? 'overview' : 'mods';
-    setInstanceTab(next);
-    if (next === 'mods') {
-      loadMods();
-      ensureDefaultModSearch();
-    }
+  document.getElementById('iStartBtn')?.addEventListener('click', () => {
+    // server: แท็บ START = สถานะ + EULA + console (ปุ่ม PLAY ของ client ถูกแทนด้วยแท็บนี้)
+    setInstanceTab('start');
   });
 
-  document.getElementById('iPacksBtn')?.addEventListener('click', () => {
-    const next = instancesState.tab === 'packs' ? 'overview' : 'packs';
-    setInstanceTab(next);
-    if (next === 'packs') {
-      loadPacks();
-      ensureDefaultPackSearch();
+  const runServerAction = async (button, action) => {
+    const instance = instancesState.detail;
+    if (!instance) return;
+    button.disabled = true;
+    try {
+      await action();
+      await loadServers({ silent: true });
+    } catch (err) {
+      toast(err.message, { error: true });
+    } finally {
+      button.disabled = false;
+      // poll รอบถัดไปจะดึง status/console ล่าสุดมาอัปเดตแผงเอง
+      startServerPoll();
+    }
+  };
+
+  document.getElementById('srvStartBtn')?.addEventListener('click', (event) => {
+    const instance = instancesState.detail;
+    if (!instance) return;
+    runServerAction(event.currentTarget, async () => {
+      await postJson(`/api/servers/${encodeURIComponent(instance.id)}/start`);
+      toast(`${instance.name} is starting`);
+    });
+  });
+
+  document.getElementById('srvStopBtn')?.addEventListener('click', (event) => {
+    const instance = instancesState.detail;
+    if (!instance) return;
+    runServerAction(event.currentTarget, async () => {
+      await postJson(`/api/servers/${encodeURIComponent(instance.id)}/stop`);
+      toast(`${instance.name} stopped`);
+    });
+  });
+
+  document.getElementById('srvEulaBtn')?.addEventListener('click', (event) => {
+    const instance = instancesState.detail;
+    if (!instance) return;
+    runServerAction(event.currentTarget, async () => {
+      await postJson(`/api/servers/${encodeURIComponent(instance.id)}/eula`, { accept: true });
+      toast('Minecraft EULA accepted');
+    });
+  });
+
+  document.getElementById('srvClearBtn')?.addEventListener('click', () => {
+    const box = document.getElementById('srvConsole');
+    if (box) box.textContent = '';
+  });
+
+  document.getElementById('iOverviewBtn')?.addEventListener('click', () => {
+    setInstanceTab('overview');
+  });
+
+  document.getElementById('iModsBtn')?.addEventListener('click', () => {
+    setInstanceTab('mods');
+    loadMods().then(() => maybeAutoCheck(['mods']));
+  });
+
+  document.getElementById('iResourcesBtn')?.addEventListener('click', () => {
+    setInstanceTab('resourcepacks');
+    loadPackList('resourcepacks').then(() => maybeAutoCheck(['resourcepacks']));
+  });
+
+  document.getElementById('iShadersBtn')?.addEventListener('click', () => {
+    setInstanceTab('shaders');
+    loadPackList('shaderpacks').then(() => maybeAutoCheck(['shaderpacks']));
+  });
+
+  document.getElementById('iUpdatesBtn')?.addEventListener('click', async () => {
+    setInstanceTab('updates');
+    await loadRemoved(); // รอ auto-restore เสร็จก่อนค่อยเริ่มเช็ค
+    maybeRunUnifiedCheck();
+  });
+  document.getElementById('updCheckBtn')?.addEventListener('click', () => runUnifiedCheck());
+  document.getElementById('updConfirmBtn')?.addEventListener('click', () => applySelectedUpdates());
+  // ย้อนกลับเวอร์ชั่นก่อนหน้า = ตั้ง target เป็น previous แล้วเช็คใหม่ ยืนยันด้วยปุ่ม UPDATE SELECTED เหมือนเดิม
+  document.getElementById('updRevertBtn')?.addEventListener('click', () => {
+    const instance = instancesState.detail;
+    const prevVersion = instance?.previousMinecraftVersion;
+    if (!instance || !prevVersion || prevVersion === instance.minecraftVersion) return;
+    const input = document.getElementById('updVersion');
+    if (input) {
+      input.value = prevVersion;
+      input.dataset.dirty = '1';
+    }
+    updatesVersionDropdown?.setValue(prevVersion, { silent: true });
+    runUnifiedCheck();
+  });
+  document.getElementById('updRestoreAllBtn')?.addEventListener('click', async () => {
+    const items = [...(instancesState.removed ?? [])];
+    if (items.length === 0) return;
+    const btn = document.getElementById('updRestoreAllBtn');
+    if (btn) btn.disabled = true;
+    instancesState.removed = [];
+    renderRemoved();
+    try {
+      const { restored, failures } = await restoreRemovedEntries(items);
+      if (restored > 0) toast(`Restored ${restored} file${restored === 1 ? '' : 's'}`);
+      if (failures.length > 0) toast(failures.join(', '), { error: true });
+      await loadRemoved();
+    } finally {
+      if (btn) btn.disabled = false;
     }
   });
+  updatesVersionDropdown = createDropdown({ containerId: 'updVersionDropdown', valueId: 'updVersion' });
+  document.getElementById('updVersion')?.addEventListener('input', (event) => {
+    if (!instancesState.detail) return;
+    event.currentTarget.dataset.dirty = '1';
+    const value = event.currentTarget.value.trim();
+    if (value === '' || value === instancesState.updatesTarget) return;
+    runUnifiedCheck(); // เลือกเป้าหมายใหม่ → เช็ครายการให้ใหม่ทันที
+  });
+  document.getElementById('updList')?.addEventListener('change', (event) => {
+    if (event.target?.classList?.contains('upd-skip')) updateConfirmButtonLabel();
+  });
+
+  // สลับ INSTALLED / GET ภายในแท็บ content เดียวกัน
+  for (const seg of document.querySelectorAll('#kindSubNav .seg')) {
+    seg.addEventListener('click', () => {
+      const kind = TAB_KIND[instancesState.tab];
+      if (!kind) return;
+      const next = seg.dataset.kindView === 'get' ? 'get' : 'list';
+      if (next === instancesState.kindView) return;
+      setInstanceTab(instancesState.tab, next);
+      if (next === 'get') ensureDefaultSearch(panelForKind(kind));
+      else maybeAutoCheck([kind]);
+    });
+  }
 
   document.getElementById('iSettingsBtn')?.addEventListener('click', () => {
-    setInstanceTab(instancesState.tab === 'settings' ? 'overview' : 'settings');
+    setInstanceTab('settings');
   });
 
   const settingsForm = document.getElementById('instanceSettingsForm');
   const settingsError = document.getElementById('instanceSettingsError');
   if (settingsForm && settingsError) {
-    for (const id of ['isName', 'isMemMin', 'isMemMax', 'isJvmArgs']) {
+    for (const id of ['isName', 'isMemMin', 'isMemMax', 'isJvmArgs', 'isPort']) {
       document.getElementById(id)?.addEventListener('input', (event) => {
         event.currentTarget.dataset.dirty = '1';
       });
@@ -1032,24 +2513,30 @@ function setupInstanceDetail() {
       const instance = instancesState.detail;
       if (!instance) return;
       settingsError.hidden = true;
-      const fieldIds = ['isName', 'isMemMin', 'isMemMax', 'isJvmArgs'];
+      const fieldIds = ['isName', 'isMemMin', 'isMemMax', 'isJvmArgs', 'isPort'];
       try {
-        const result = await patchJson(`/api/instances/${encodeURIComponent(instance.id)}`, {
+        const payload = {
           name: document.getElementById('isName').value.trim(),
           memory: {
             min: document.getElementById('isMemMin').value.trim(),
             max: document.getElementById('isMemMax').value.trim(),
           },
           extraJvmArgs: parseArgString(document.getElementById('isJvmArgs').value),
-        });
+        };
+        if (instance.type === 'server') {
+          const port = Number.parseInt(document.getElementById('isPort').value, 10);
+          if (Number.isInteger(port)) payload.port = port;
+        }
+        const result = await patchJson(`/api/instances/${encodeURIComponent(instance.id)}`, payload);
         for (const id of fieldIds) {
           const input = document.getElementById(id);
           if (input) delete input.dataset.dirty;
         }
         instancesState.detail = result.instance;
         renderInstanceDetail();
-        toast('Instance settings saved');
+        toast(instance.type === 'server' ? 'Server settings saved' : 'Instance settings saved');
         await loadInstances({ silent: true });
+        await loadServers({ silent: true });
       } catch (err) {
         settingsError.hidden = false;
         settingsError.textContent = err.message;
@@ -1062,7 +2549,8 @@ function setupInstanceDetail() {
   });
 
   document.getElementById('iDeleteBtn')?.addEventListener('click', () => {
-    if (instancesState.detail) deleteInstance(instancesState.detail);
+    const instance = instancesState.detail;
+    if (instance) deleteInstance(instance, instance.type === 'server' ? 'server' : 'instance');
   });
 }
 
@@ -1079,9 +2567,19 @@ function setImportStep(step) {
   modal.dataset.step = String(step);
 }
 
-function openImportModal() {
+function openImportModal(mode = 'instance') {
   importState.token = null;
   importState.manifest = null;
+  importState.mode = mode === 'server' ? 'server' : 'instance';
+  const title = document.getElementById('importTitle');
+  if (title) title.textContent = importState.mode === 'server' ? 'Import Server' : 'Import Instance';
+  // wizard "Instance Name" ↔ "Server Name" ตามชนิด
+  const nameWord = importState.mode === 'server' ? 'Server Name' : 'Instance Name';
+  for (const span of document.querySelectorAll('#importModal .wizard-path span')) {
+    if (span.textContent === 'Instance Name' || span.textContent === 'Server Name') span.textContent = nameWord;
+  }
+  const nameLabel = document.querySelector('#importStep2 .field-label');
+  if (nameLabel) nameLabel.textContent = nameWord;
   const error = document.getElementById('importError');
   error.hidden = true;
   error.textContent = '';
@@ -1101,13 +2599,42 @@ function showImportError(message) {
   error.textContent = message;
 }
 
+// preview สำเร็จ (จาก upload หรือจาก path) → สรุป + ไปขั้นชื่อ instance
+function applyImportPreview(payload) {
+  importState.token = payload.token;
+  importState.manifest = payload.manifest;
+
+  const summary = document.getElementById('importSummary');
+  summary.replaceChildren();
+  const facts = document.createElement('dl');
+  facts.className = 'facts';
+  for (const [label, value] of [
+    ['Archive name', payload.manifest.name],
+    ['Minecraft', payload.manifest.minecraftVersion],
+    ['Loader', payload.manifest.fabricLoaderVersion],
+  ]) {
+    const item = document.createElement('div');
+    item.append(makeText('dt', '', label), makeText('dd', '', value));
+    facts.appendChild(item);
+  }
+  summary.appendChild(facts);
+
+  document.getElementById('importName').value = payload.manifest.name;
+  setImportStep(2);
+}
+
+// path ของ import endpoint ตามชนิดที่เลือก — client กับ server คนละประตูกัน
+function importEndpoint() {
+  return importState.mode === 'server' ? '/api/servers/import' : '/api/instances/import';
+}
+
 async function handleImportFile(file) {
   if (!file) return;
   const error = document.getElementById('importError');
   error.hidden = true;
 
   try {
-    const response = await fetch('/api/instances/import?preview=1', {
+    const response = await apiFetch(`${importEndpoint()}?preview=1`, {
       method: 'POST',
       headers: { 'content-type': 'application/zip', accept: 'application/json' },
       body: file,
@@ -1122,27 +2649,7 @@ async function handleImportFile(file) {
       throw new Error(payload?.error?.message || `Upload failed (${response.status})`);
     }
 
-    importState.token = payload.token;
-    importState.manifest = payload.manifest;
-
-    const summary = document.getElementById('importSummary');
-    summary.replaceChildren();
-    const facts = document.createElement('dl');
-    facts.className = 'facts';
-    for (const [label, value] of [
-      ['Archive name', payload.manifest.name],
-      ['Minecraft', payload.manifest.minecraftVersion],
-      ['Loader', `${payload.manifest.loader} ${payload.manifest.fabricLoaderVersion}`],
-      ['Format', `v${payload.manifest.format}`],
-    ]) {
-      const item = document.createElement('div');
-      item.append(makeText('dt', '', label), makeText('dd', '', value));
-      facts.appendChild(item);
-    }
-    summary.appendChild(facts);
-
-    document.getElementById('importName').value = payload.manifest.name;
-    setImportStep(2);
+    applyImportPreview(payload);
   } catch (err) {
     showImportError(err.message);
   }
@@ -1153,12 +2660,13 @@ async function confirmImport() {
   const confirmBtn = document.getElementById('importConfirmBtn');
   confirmBtn.disabled = true;
   try {
-    const result = await postJson('/api/instances/import', { token: importState.token, name });
+    const result = await postJson(importEndpoint(), { token: importState.token, name });
     document.getElementById('importDoneName').textContent = result.name;
     document.getElementById('importDoneMeta').textContent =
-      `Minecraft ${result.manifest.minecraftVersion} · Fabric ${result.manifest.fabricLoaderVersion} · ${result.files} files`;
+      `Minecraft ${result.manifest.minecraftVersion} · ${result.manifest.fabricLoaderVersion} · ${result.files} files`;
     setImportStep(3);
     await loadInstances({ silent: true });
+    await loadServers({ silent: true });
   } catch (err) {
     toast(err.message, { error: true });
   } finally {
@@ -1167,48 +2675,72 @@ async function confirmImport() {
 }
 
 function setupImportModal() {
-  document.getElementById('importInstanceBtn')?.addEventListener('click', openImportModal);
+  document.getElementById('importInstanceBtn')?.addEventListener('click', () => openImportModal('instance'));
+  document.getElementById('importServerBtn')?.addEventListener('click', () => openImportModal('server'));
   document.querySelectorAll('[data-open-import]').forEach((button) => {
-    button.addEventListener('click', openImportModal);
+    button.addEventListener('click', () => openImportModal('instance'));
   });
+  document.querySelectorAll('[data-open-server-import]').forEach((button) => {
+    button.addEventListener('click', () => openImportModal('server'));
+  });
+  document.getElementById('importChooseBtn')?.addEventListener('click', () => document.getElementById('importFile').click());
   document.getElementById('importFile')?.addEventListener('change', (event) => {
-    handleImportFile(event.target.files?.[0] ?? null);
+    const file = event.target.files?.[0] ?? null;
+    event.target.value = ''; // เคลียร์เพื่อให้เลือกไฟล์เดิมซ้ำได้ (change ไม่ fire ถ้า value ไม่เปลี่ยน)
+    handleImportFile(file);
   });
   document.getElementById('importCancelBtn')?.addEventListener('click', closeImportModal);
   document.getElementById('importConfirmBtn')?.addEventListener('click', confirmImport);
   document.getElementById('importDoneBtn')?.addEventListener('click', () => {
+    const mode = importState.mode;
     closeImportModal();
-    showView('instances');
+    showView(mode === 'server' ? 'servers' : 'instances');
   });
   document.getElementById('importModal')?.addEventListener('click', (event) => {
     if (event.target.id === 'importModal' && event.target.dataset.step === '1') closeImportModal();
   });
 }
 
-function openCreateModal() {
+function openCreatePage(mode = 'instance') {
+  createState.mode = mode === 'server' ? 'server' : 'instance';
+  const isServer = createState.mode === 'server';
+  const title = document.getElementById('createTitle');
+  if (title) title.textContent = isServer ? 'Create Server' : 'Create Instance';
+  const subtitle = document.getElementById('createSubtitle');
+  if (subtitle) {
+    subtitle.textContent = isServer
+      ? 'Name it, pick a Minecraft version and a loader — server files install on first START.'
+      : 'Name it, pick a Minecraft version and a loader, then hit CREATE.';
+  }
+  const backLabel = document.getElementById('createBackLabel');
+  if (backLabel) backLabel.textContent = isServer ? 'Servers' : 'Instances';
   document.getElementById('createError').hidden = true;
   document.getElementById('createForm').reset();
   createDropdowns.mc?.reset();
   createDropdowns.fabric?.reset();
   createDropdowns.mc?.setDefaultFromOptions();
   createDropdowns.fabric?.setDefaultFromOptions();
-  document.getElementById('createModal').hidden = false;
-  loadCatalogOptions();
+  showView('create');
 }
 
-function closeCreateModal() {
-  document.getElementById('createModal').hidden = true;
+function closeCreatePage() {
+  location.hash = createState.mode === 'server' ? '#servers' : '#instances';
 }
 
-function setupCreateModal() {
+function setupCreatePage() {
   createDropdowns.mc = createDropdown({ containerId: 'createMcDropdown', valueId: 'createMc' });
   createDropdowns.fabric = createDropdown({ containerId: 'createFabricDropdown', valueId: 'createFabric' });
 
-  document.getElementById('createInstanceBtn')?.addEventListener('click', openCreateModal);
+  document.getElementById('createInstanceBtn')?.addEventListener('click', () => openCreatePage('instance'));
+  document.getElementById('createServerBtn')?.addEventListener('click', () => openCreatePage('server'));
   document.querySelectorAll('[data-open-create]').forEach((button) => {
-    button.addEventListener('click', openCreateModal);
+    button.addEventListener('click', () => openCreatePage('instance'));
   });
-  document.getElementById('createCancelBtn')?.addEventListener('click', closeCreateModal);
+  document.querySelectorAll('[data-open-create-server]').forEach((button) => {
+    button.addEventListener('click', () => openCreatePage('server'));
+  });
+  document.getElementById('createCancelBtn')?.addEventListener('click', closeCreatePage);
+  document.getElementById('createBackBtn')?.addEventListener('click', closeCreatePage);
 
   document.getElementById('createForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -1218,19 +2750,21 @@ function setupCreateModal() {
     const fabricLoaderVersion = document.getElementById('createFabric').value.trim();
     if (minecraftVersion === '' || fabricLoaderVersion === '') {
       errorBox.hidden = false;
-      errorBox.textContent = 'Pick a Minecraft version and a Fabric loader version first';
+      errorBox.textContent = 'Pick a Minecraft version and a loader version first';
       return;
     }
+    const isServer = createState.mode === 'server';
     try {
-      const result = await postJson('/api/instances', {
+      const result = await postJson(isServer ? '/api/servers' : '/api/instances', {
         name: document.getElementById('createName').value.trim(),
         minecraftVersion,
         fabricLoaderVersion,
       });
-      closeCreateModal();
-      toast(`${result.instance.name} created`);
+      const created = result.server ?? result.instance;
+      toast(`${created.name} created`);
       await loadInstances({ silent: true });
-      location.hash = `#instance/${encodeURIComponent(result.instance.id)}`;
+      await loadServers({ silent: true });
+      location.hash = `#instance/${encodeURIComponent(created.id)}`;
     } catch (err) {
       errorBox.hidden = false;
       errorBox.textContent = err.message;
@@ -1244,7 +2778,7 @@ const authState = { device: null, controller: null };
 const catalogState = { minecraft: false, fabric: false };
 const createDropdowns = { mc: null, fabric: null };
 const settingsDropdowns = { logLevel: null, windowPlatform: null };
-const packSearchDropdowns = { type: null };
+let updatesVersionDropdown = null;
 const javaRuntimeState = { loaded: false, failed: false, list: [], chosen: null };
 let javaRtDropdown = null;
 
@@ -1254,20 +2788,37 @@ async function loadSession({ silent = false } = {}) {
     renderSession(session);
     return session;
   } catch (err) {
-    if (!silent) toast(err.message, { error: true });
+    // backend หลุดแล้ว → disconnect page คุมหน้าจออยู่ ไม่ต้อง toast ซ้ำ
+    if (!silent && state.serverStatus !== 'offline') toast(err.message, { error: true });
     return null;
   }
 }
 
+// หมดอายุ → logout auto: server ลบ session เองตอนอ่าน ฝั่ง UI แค่ตั้งเวลาไปเรียกอ่านใหม่เมื่อครบอายุ
+let sessionLogoutTimer = null;
+function scheduleSessionLogout(expiresAt) {
+  if (sessionLogoutTimer !== null) {
+    clearTimeout(sessionLogoutTimer);
+    sessionLogoutTimer = null;
+  }
+  if (!Number.isFinite(expiresAt)) return;
+  sessionLogoutTimer = setTimeout(() => {
+    sessionLogoutTimer = null;
+    loadSession({ silent: true });
+  }, Math.max(expiresAt - Date.now(), 0) + 1500);
+}
+
 function renderSession(session) {
   const signedIn = session?.signedIn === true;
-  el.accountPill.hidden = !signedIn;
+  state.signedIn = signedIn;
   el.skinOpenBtn.hidden = !signedIn; // ปุ่มสกินข้างชื่อผู้เล่น — มีเฉพาะตอน sign in
-  el.authBtn.textContent = signedIn ? 'ACCOUNT' : 'SIGN IN';
-  // เขียนชื่อทุกครั้ง (ไม่ใช่แค่ตอน sign in) จะได้ไม่ค้างชื่อเก่าหลัง sign out
-  el.accountPill.textContent = signedIn ? (session.username ?? '—') : '—';
+  // ป้ายชื่อใน sidebar เป็นปุ่มเปิด account โดยตรง (แทนปุ่ม Account เดิม) — ไม่ login โชว์ "SIGN IN"
+  el.accountPill.textContent = signedIn ? (session.username ?? '—') : 'SIGN IN';
   const offlineForm = document.getElementById('offlineNameForm');
   if (offlineForm) offlineForm.hidden = signedIn;
+  // ถูก sign out ระหว่างเปิดหน้าต่างสกินค้างไว้ → ปิดทันที ห้ามใช้สกินโดยไม่ login
+  if (!signedIn) closeSkinOverlay();
+  scheduleSessionLogout(signedIn ? session.expiresAt : null);
 }
 
 function authModal() {
@@ -1281,14 +2832,12 @@ function showAuthError(message, targetId = 'authError') {
 }
 
 function renderAuthModal(session) {
-  renderAuthFlowPicker(); // LIVE FLOW — ลบพร้อม src/auth/live.js
   const signedIn = session?.signedIn === true;
   document.getElementById('authSignedIn').hidden = !signedIn;
   document.getElementById('authSignedOut').hidden = signedIn;
   document.getElementById('authStartBtn').disabled = session?.clientConfigured === false;
 
   if (signedIn) {
-    // ลบ error ค้างจากการ refresh ที่ล้มเหลวก่อนหน้า ออกเมื่อ sign in ใหม่สำเร็จ
     document.getElementById('authSessionError').hidden = true;
     document.getElementById('authError').hidden = true;
     document.getElementById('skinError').hidden = true;
@@ -1299,7 +2848,7 @@ function renderAuthModal(session) {
       ['Username', session.username],
       ['UUID', session.uuid],
       ['Xbox XUID', session.xuid ?? '—'],
-      ['Expires', session.expired ? `${expires} (expired)` : expires],
+      ['Expires', expires],
     ]) {
       const item = document.createElement('div');
       item.append(makeText('dt', '', label), makeText('dd', '', String(value)));
@@ -1406,48 +2955,6 @@ async function signOut() {
     toast('Signed out');
   } catch (err) {
     showAuthError(err.message, 'authSessionError');
-  }
-}
-
-// กันกด REFRESH ถี่เกินไป (upstream เคยตอบ 429) — มีทั้ง busy lock และ cooldown
-const REFRESH_COOLDOWN_MS = 15_000;
-let refreshBusy = false;
-let refreshCooldownUntil = 0;
-
-async function refreshAuthSession() {
-  if (refreshBusy) return;
-  if (Date.now() < refreshCooldownUntil) {
-    const waitSec = Math.ceil((refreshCooldownUntil - Date.now()) / 1000);
-    showAuthError(`Please wait ${waitSec}s before refreshing again`, 'authSessionError');
-    return;
-  }
-  refreshBusy = true;
-  const button = document.getElementById('authRefreshBtn');
-  const label = button?.textContent;
-  if (button) {
-    button.disabled = true;
-    button.textContent = 'REFRESHING…';
-  }
-  try {
-    const result = await postJson('/api/auth/refresh', {});
-    renderSession(result.session);
-    renderAuthModal(result.session);
-    document.getElementById('authSessionError').hidden = true;
-    toast('Session refreshed');
-  } catch (err) {
-    showAuthError(err.message, 'authSessionError');
-    if (err.status === 401) {
-      renderSession({ signedIn: false });
-      renderAuthModal({ signedIn: false });
-      resetAuthStartUi();
-    }
-  } finally {
-    refreshBusy = false;
-    refreshCooldownUntil = Date.now() + REFRESH_COOLDOWN_MS;
-    if (button) {
-      button.disabled = false;
-      button.textContent = label;
-    }
   }
 }
 
@@ -1686,6 +3193,8 @@ async function loadActiveSkin({ freshDataUrl = null } = {}) {
 }
 
 async function openSkinOverlay() {
+  // ห้ามเปิดหน้าต่างสกินโดยไม่ได้ sign in (ปุ่มถูกซ่อนอยู่แล้ว — guard กันเรียกซ้ำผ่านช่องทางอื่น)
+  if (!state.signedIn) return;
   const modal = skinOverlayEl();
   if (!modal) return;
   document.getElementById('skinError').hidden = true;
@@ -1766,7 +3275,7 @@ function setupSkinControls() {
   ]);
   skinVariantDropdown?.setValue('classic', { silent: true });
 
-  // ปุ่ม SKIN ข้างชื่อผู้เล่น (topbar) → เปิดหน้าต่างสกิน
+  // ปุ่ม SKIN ข้างชื่อผู้เล่น (sidebar) → เปิดหน้าต่างสกิน
   document.getElementById('skinOpenBtn')?.addEventListener('click', openSkinOverlay);
 
   // CHOOSE FILE แบบ custom (ซ่อน input ไฟล์ของระบบไว้ข้างใน)
@@ -1794,51 +3303,9 @@ function setupSkinControls() {
   });
 }
 
-// ---------- LIVE FLOW: ตัวเลือกวิธี sign in (ลบบล็อกนี้พร้อม src/auth/live.js) ----------
-
-function currentAuthFlow() {
-  return state.config?.auth?.flow === 'live' ? 'live' : 'aad';
-}
-
-function renderAuthFlowPicker() {
-  const picker = document.getElementById('authFlowPicker');
-  if (!picker) return;
-  const flow = currentAuthFlow();
-  for (const option of picker.querySelectorAll('[data-flow]')) {
-    const active = option.dataset.flow === flow;
-    option.classList.toggle('active', active);
-    option.setAttribute('aria-pressed', active ? 'true' : 'false');
-  }
-  const hint = document.getElementById('authFlowHint');
-  if (hint) {
-    hint.textContent = flow === 'live'
-      ? 'Instant — signs you in through Minecraft’s Microsoft sign-in. Recommended for most players.'
-      : 'Standard — signs you in with this launcher’s own Microsoft app.';
-  }
-}
-
-function setupAuthFlowPicker() {
-  document.getElementById('authFlowPicker')?.addEventListener('click', async (event) => {
-    const option = event.target.closest('[data-flow]');
-    if (!option) return;
-    const flow = option.dataset.flow;
-    if (flow !== 'aad' && flow !== 'live') return;
-    try {
-      await patchJson('/api/config', { auth: { flow } });
-      await refresh();
-      renderAuthFlowPicker();
-      toast(flow === 'live' ? 'Sign-in method set to Instant' : 'Sign-in method set to Standard');
-    } catch (err) {
-      showAuthError(err.message);
-    }
-  });
-}
-
-// ---------- /LIVE FLOW ----------
-
 function setupAuth() {
   setupSkinControls();
-  el.authBtn?.addEventListener('click', openAuthModal);
+  el.accountPill?.addEventListener('click', openAuthModal);
   document.getElementById('accountsNavBtn')?.addEventListener('click', openAuthModal);
   document.getElementById('authStartBtn')?.addEventListener('click', startAuth);
   document.getElementById('authCancelBtn')?.addEventListener('click', () => {
@@ -1852,7 +3319,6 @@ function setupAuth() {
   });
   document.getElementById('authCloseBtn')?.addEventListener('click', closeAuthModal);
   document.getElementById('authSignOutBtn')?.addEventListener('click', signOut);
-  document.getElementById('authRefreshBtn')?.addEventListener('click', refreshAuthSession);
   authModal()?.addEventListener('click', (event) => {
     if (event.target.id === 'authModal') closeAuthModal();
   });
@@ -1899,7 +3365,7 @@ function setupServerConfigForm() {
   settingsDropdowns.windowPlatform = createDropdown({ containerId: 'cfgWindowDropdown', valueId: 'cfgWindow' });
   settingsDropdowns.windowPlatform?.setOptions([
     { value: 'auto', label: 'System (auto)' },
-    { value: 'x11', label: 'X11 / XWayland' },
+    { value: 'wayland', label: 'Wayland only' },
   ]);
 
   for (const id of ['cfgHost', 'cfgPort', 'cfgLogLevel', 'cfgWindow']) {
@@ -1941,6 +3407,101 @@ function setupServerConfigForm() {
     } catch (err) {
       errorBox.hidden = false;
       errorBox.textContent = err.message;
+    }
+  });
+}
+
+// ---------- Data directory (ย้ายข้อมูลเดิมไปที่ใหม่ — apply ตอน restart backend) ----------
+
+function setupDataDirForm() {
+  const form = document.getElementById('dataDirForm');
+  const input = document.getElementById('cfgDataDir');
+  const errorBox = document.getElementById('dataDirError');
+  if (!form || !input || !errorBox) return;
+
+  input.addEventListener('input', () => {
+    input.dataset.dirty = '1';
+    errorBox.hidden = true;
+  });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    errorBox.hidden = true;
+    const target = input.value.trim();
+    if (!target) return;
+
+    const current = state.config?.paths?.dataDir ?? '';
+    const ok = await confirmDialog({
+      title: 'Move data directory',
+      message: `Move all TML data from ${current} to ${target}? The new folder is used after restart.`,
+      confirmLabel: 'MOVE DATA',
+      danger: true,
+    });
+    if (!ok) return;
+
+    const submit = form.querySelector('button[type="submit"]');
+    if (submit) submit.disabled = true;
+    try {
+      await patchJson('/api/config', { dataDir: target });
+      input.value = '';
+      delete input.dataset.dirty;
+      toast('Data moved — restart TML to use the new folder');
+      await refresh();
+    } catch (err) {
+      errorBox.hidden = false;
+      errorBox.textContent = err.message;
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  });
+}
+
+// ---------- Disconnect page (หน้า error ใหญ่ ตอน backend หลุด) ----------
+
+function setupDisconnectPage() {
+  el.disconnectRetryBtn?.addEventListener('click', () => {
+    refresh();
+  });
+}
+
+// ---------- Pending banner (data dir เปลี่ยนแล้ว — รอ restart) ----------
+
+function setupPendingBanner() {
+  el.pendingBannerClose?.addEventListener('click', () => {
+    state.pendingDismissed = true;
+    if (el.pendingBanner) el.pendingBanner.hidden = true;
+  });
+}
+
+// ---------- Instance icon (เปลี่ยนรูปด้วยการคลิกที่ไอคอนหัวหน้า detail, ลบด้วยปุ่ม ×) ----------
+
+function setupInstanceIcons() {
+  document.getElementById('iIconBtn')?.addEventListener('click', () => {
+    const instance = instancesState.detail;
+    if (instance) promptInstanceIcon(instance);
+  });
+  document.getElementById('iIconDeleteBtn')?.addEventListener('click', async () => {
+    const instance = instancesState.detail;
+    if (!instance) return;
+    try {
+      await deleteJson(`/api/instances/${encodeURIComponent(instance.id)}/icon`);
+      toast('Icon removed');
+      await loadInstances({ silent: true });
+      if (instance.type === 'server') await loadServers({ silent: true });
+      await loadInstanceDetail(instance.id);
+    } catch (err) {
+      if (state.serverStatus !== 'offline') toast(err.message, { error: true });
+    }
+  });
+  document.getElementById('iIcon')?.addEventListener('error', () => {
+    const iconImg = document.getElementById('iIcon');
+    const fallback = document.getElementById('iIconFallback');
+    const del = document.getElementById('iIconDeleteBtn');
+    if (iconImg) iconImg.hidden = true;
+    if (del) del.hidden = true;
+    if (fallback && instancesState.detail) {
+      fallback.textContent = (instancesState.detail.name ?? '').trim().charAt(0).toUpperCase() || '?';
+      fallback.hidden = false;
     }
   });
 }
@@ -2017,11 +3578,11 @@ function renderJavaRuntimeCard() {
   // ปุ่ม DELETE เห็นเฉพาะ runtime ที่โหลดมาแล้ว (โหลดค้างอยู่/ยังไม่โหลด → ซ่อน)
   if (deleteBtn) deleteBtn.hidden = !(runtime && runtime.downloaded);
 
-  // pill + ปุ่มบอกสถานะเลือก/ยังไม่เลือก (โหลดแล้วเท่านั้นถึงเลือกได้)
+  // pill = สถานะ (ยังไม่เลือก → —), ปุ่ม = การกระทำ (โหลดแล้วยังไม่เลือก → SELECT)
   const selected = Boolean(runtime) && runtime.name === javaRuntimeState.chosen;
-  pill.textContent = runtime ? (selected ? 'SELECTED' : 'NOT SELECTED') : '—';
+  pill.textContent = selected ? 'SELECTED' : '—';
   if (!runtime) {
-    actionBtn.textContent = 'NOT SELECTED';
+    actionBtn.textContent = '—';
     actionBtn.disabled = true;
     actionBtn.dataset.mode = 'none';
   } else if (!runtime.downloaded) {
@@ -2033,7 +3594,7 @@ function renderJavaRuntimeCard() {
     actionBtn.disabled = true;
     actionBtn.dataset.mode = 'none';
   } else {
-    actionBtn.textContent = 'NOT SELECTED';
+    actionBtn.textContent = 'SELECT';
     actionBtn.disabled = false;
     actionBtn.dataset.mode = 'select';
   }
@@ -2104,20 +3665,20 @@ async function loadJavaRuntimes({ force = false } = {}) {
 function setupJavaRuntimeCard() {
   javaRtDropdown = createDropdown({ containerId: 'javaRtDropdown', valueId: 'javaRtValue' });
   javaRtDropdown?.setOptions([]);
-  javaRtDropdown?.setPlaceholder('NOT SELECTED');
+  javaRtDropdown?.setPlaceholder('—');
 
   const errorBox = document.getElementById('javaRtError');
   const valueInput = document.getElementById('javaRtValue');
   const actionBtn = document.getElementById('javaRtActionBtn');
   const deleteBtn = document.getElementById('javaRtDeleteBtn');
 
-  // dropdown ใช้ดูรายละเอียดอย่างเดียว — การเลือกใช้จริงทำผ่านปุ่ม NOT SELECTED → SELECTED
+  // dropdown ใช้ดูรายละเอียดอย่างเดียว — การเลือกใช้จริงทำผ่านปุ่ม SELECT → SELECTED
   valueInput?.addEventListener('input', () => {
     renderJavaRuntimeCard();
     if (errorBox) errorBox.hidden = true;
   });
 
-  // ปุ่มเดียว 3 สถานะ: DOWNLOAD (ยังไม่โหลด) / NOT SELECTED (โหลดแล้วยังไม่เลือก) / SELECTED (เลือกแล้ว)
+  // ปุ่มเดียว 4 สถานะ: — (ยังไม่มี runtime) / DOWNLOAD (ยังไม่โหลด) / SELECT (โหลดแล้วยังไม่เลือก) / SELECTED (เลือกแล้ว)
   actionBtn?.addEventListener('click', async () => {
     const name = valueInput?.value.trim();
     const mode = actionBtn.dataset.mode;
@@ -2168,10 +3729,13 @@ function setupJavaRuntimeCard() {
     const runtime = javaRuntimeState.list.find((entry) => entry.name === name) ?? null;
     if (!name || !runtime?.downloaded) return;
     const wasChosen = javaRuntimeState.chosen === name;
-    const confirmed = window.confirm(
-      `Delete downloaded Java runtime "${name}"?\n\nThis removes its files from disk permanently.` +
-        (wasChosen ? '\n\nIt is the selected runtime — PLAY will need a downloaded runtime to be selected again.' : ''),
-    );
+    const confirmed = await confirmDialog({
+      title: 'Delete Java runtime',
+      message:
+        `Delete downloaded Java runtime "${name}"? This removes its files from disk permanently.` +
+        (wasChosen ? ' It is the selected runtime — PLAY will need a downloaded runtime to be selected again.' : ''),
+      confirmLabel: 'DELETE',
+    });
     if (!confirmed) return;
 
     if (errorBox) errorBox.hidden = true;
@@ -2341,6 +3905,14 @@ function createDropdown({ containerId, valueId }) {
     },
     setDefaultFromOptions,
     setValue,
+    // เติมค่าจากภายนอก (poll ทุก 3 วิ) — ห้ามแตะระหว่างผู้ใช้เปิดเมนูเลือกค่าอยู่
+    // (setValue() กลางทางจะปิดเมนูทิ้ง → คลิกเลือกค่าไม่โดน = "ปุ่ม version ไม่ทำงาน")
+    fillIfIdle(value) {
+      if (!menu.hidden) return;
+      const next = String(value);
+      if (valueInput.value !== next) valueInput.value = next;
+      syncLabel();
+    },
     getValue: () => valueInput.value,
     setPlaceholder(text) {
       placeholder = String(text);
@@ -2370,11 +3942,20 @@ function compareVersionsDesc(a, b) {
   return 0;
 }
 
+let mcVersionsCache = null;
+async function fetchMcVersionIds() {
+  if (mcVersionsCache) return mcVersionsCache;
+  const data = await fetchJson('/api/minecraft/versions?type=release&limit=80');
+  const ids = (data.versions ?? []).map((version) => version.id);
+  if (ids.length > 0) mcVersionsCache = ids;
+  return ids;
+}
+
 async function loadCatalogOptions() {
   if (!catalogState.minecraft) {
     try {
-      const data = await fetchJson('/api/minecraft/versions?type=release&limit=80');
-      createDropdowns.mc?.setOptions((data.versions ?? []).map((version) => version.id));
+      const ids = await fetchMcVersionIds();
+      createDropdowns.mc?.setOptions(ids);
       createDropdowns.mc?.setDefaultFromOptions();
       catalogState.minecraft = true;
     } catch {
@@ -2458,6 +4039,7 @@ function modResultRow(hit, { kind = 'mods' } = {}) {
   return row;
 }
 
+// โหลดจาก search → ดึงรายการเวอร์ชีที่เข้ากับ instance นี้ แล้วเปิดตัวเลือกเวอร์ชี (ไม่ auto-pick)
 async function installFromSearch(hit, button, { kind = 'mods' } = {}) {
   const instance = instancesState.detail;
   if (!instance) return;
@@ -2466,38 +4048,22 @@ async function installFromSearch(hit, button, { kind = 'mods' } = {}) {
   button.textContent = '…';
 
   try {
+    // mods กรองด้วย Minecraft + Fabric / packs (resource+shader) ไม่กรองอะไรเลย → โชว์ทุกเวอร์ชีให้ผู้ใช้เลือกเอง
     const versionsUrl =
       `/api/modrinth/project/${encodeURIComponent(hit.projectId)}/versions` +
-      `?game=${encodeURIComponent(instance.minecraftVersion)}` +
-      (isMod ? '&loader=fabric' : '');
+      (isMod
+        ? `?game=${encodeURIComponent(instance.minecraftVersion)}&loader=fabric`
+        : '');
     const data = await fetchJson(versionsUrl);
     const versions = data.versions ?? [];
-    const version =
-      versions.find((entry) => entry.versionType === 'release' && entry.files.length > 0) ??
-      versions.find((entry) => entry.files.length > 0);
-    if (!version) {
+    if (versions.length === 0) {
       throw new Error(
         isMod
           ? `${hit.title} has no downloadable file for Minecraft ${instance.minecraftVersion} + Fabric`
-          : `${hit.title} has no downloadable file for Minecraft ${instance.minecraftVersion}`
+          : `${hit.title} has no versions on Modrinth`
       );
     }
-
-    const result = await postJson(`/api/instances/${instance.id}${isMod ? '/mods' : '/packs'}`, {
-      versionId: version.id,
-      ...(isMod ? {} : { kind }),
-    });
-    toast(`Installed ${result.files.map((file) => file.filename).join(', ')}`);
-    if (isMod) {
-      const refreshed = await fetchJson(`/api/instances/${encodeURIComponent(instance.id)}`);
-      instancesState.detail = refreshed.instance;
-      renderInstanceDetail();
-      await loadMods();
-      await loadInstances({ silent: true });
-    } else {
-      await loadPacks();
-    }
-    button.textContent = 'INSTALLED';
+    openVersionPicker(hit, versions, { kind, button });
   } catch (err) {
     toast(err.message, { error: true });
     button.disabled = false;
@@ -2505,19 +4071,205 @@ async function installFromSearch(hit, button, { kind = 'mods' } = {}) {
   }
 }
 
+// ปุ่ม VERSIONS ในแถว mods/packs — เรียกรายการเวอร์ชีของไฟล์นี้บน Modrinth มาเลือกติดตั้งแทน
+async function openVersionsFor(filename, kind, button) {
+  const instance = instancesState.detail;
+  if (!instance) return;
+  if (instancesState.checking) {
+    toast('A check is already running — try again in a moment.');
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = '…';
+  try {
+    let check = checkResultFor(filename, kind);
+    if (!check) {
+      // ยังไม่เคยเช็ค → เช็คก่อนเพื่อหา projectId ของไฟล์นี้
+      await runInstanceCheck([kind], { render: renderForKind(kind) });
+      check = checkResultFor(filename, kind);
+    }
+    if (!check?.projectId) {
+      throw new Error(`${filename} isn't identified on Modrinth — this file has no project to browse`);
+    }
+    const isMod = kind === 'mods';
+    // mods กรอง Minecraft + Fabric / packs โชว์ทุกเวอร์ชีให้เลือกเอง (รีซอสไม่สน MC version)
+    const versionsUrl =
+      `/api/modrinth/project/${encodeURIComponent(check.projectId)}/versions` +
+      (isMod
+        ? `?game=${encodeURIComponent(instance.minecraftVersion)}&loader=fabric`
+        : '');
+    const data = await fetchJson(versionsUrl);
+    const versions = data.versions ?? [];
+    if (versions.length === 0) {
+      throw new Error(
+        isMod
+          ? `No versions of ${filename} for Minecraft ${instance.minecraftVersion} + Fabric`
+          : `No versions of ${filename} on Modrinth`
+      );
+    }
+    button.disabled = false;
+    button.textContent = original;
+    openVersionPicker({ projectId: check.projectId, title: filename }, versions, {
+      kind,
+      button,
+      replaceFilename: filename,
+    });
+  } catch (err) {
+    toast(err.message, { error: true });
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+function appendVersionsButton(row, filename, kind) {
+  const versions = makeText('button', 'btn btn-small', 'VERSIONS');
+  versions.type = 'button';
+  versions.title = 'Browse every Modrinth version of this file and install one instead';
+  versions.addEventListener('click', () => openVersionsFor(filename, kind, versions));
+  row.appendChild(versions);
+}
+
+function openVersionPicker(hit, versions, { kind = 'mods', button = null, replaceFilename = null } = {}) {
+  versionPickerState = { hit, versions, kind, button, replaceFilename, buttonDefault: button?.textContent ?? 'INSTALL' };
+  document.getElementById('versionPickTitle').textContent = `Choose a version — ${hit.title}`;
+  document.getElementById('versionPickMeta').textContent =
+    kind === 'mods'
+      ? 'Compatible with this instance (Minecraft + Fabric). Newest first.'
+      : 'Every version on Modrinth — not filtered by Minecraft. Newest first.';
+  const error = document.getElementById('versionPickError');
+  error.hidden = true;
+  error.textContent = '';
+
+  const listEl = document.getElementById('versionPickList');
+  listEl.replaceChildren();
+  for (const version of versions) {
+    const row = document.createElement('div');
+    row.className = 'version-row-pick';
+
+    const info = document.createElement('div');
+    info.className = 'version-row-info';
+    const metaBits = [version.name, version.versionType, version.datePublished ? String(version.datePublished).slice(0, 10) : '']
+      .filter(Boolean)
+      .join(' · ');
+    info.append(
+      makeText('span', 'version-row-name', version.versionNumber ?? version.id),
+      makeText('span', 'version-row-meta', metaBits)
+    );
+    row.appendChild(info);
+
+    const size = version.files?.[0]?.size;
+    if (typeof size === 'number') row.appendChild(makeText('span', 'version-row-size', formatBytes(size)));
+
+    const installBtn = makeText('button', 'btn btn-primary btn-small', 'INSTALL');
+    installBtn.type = 'button';
+    installBtn.addEventListener('click', () => pickVersionAndInstall(version));
+    row.appendChild(installBtn);
+    listEl.appendChild(row);
+  }
+  document.getElementById('versionPickModal').hidden = false;
+}
+
+async function pickVersionAndInstall(version) {
+  const state = versionPickerState;
+  const instance = instancesState.detail;
+  if (!state || !instance) return;
+  const isMod = state.kind === 'mods';
+  const panelId = panelForKind(state.kind);
+  const listEl = document.getElementById('versionPickList');
+  const error = document.getElementById('versionPickError');
+  error.hidden = true;
+  for (const button of listEl.querySelectorAll('button')) button.disabled = true;
+
+  try {
+    // เปลี่ยนเวอร์ชีไฟล์ที่ติดตั้งอยู่แล้ว → ติดตั้งทับผ่าน applyUpdate (ลบไฟล์ชื่อเก่าถ้าชื่อเปลี่ยน)
+    if (state.replaceFilename) {
+      await applyUpdate(
+        { filename: state.replaceFilename, latest: { versionId: version.id, versionNumber: version.versionNumber } },
+        state.kind
+      );
+      toast(`Updated ${state.replaceFilename} → ${version.versionNumber ?? version.id}`);
+      closeVersionPicker({ keepButton: true });
+      if (isMod) {
+        const refreshed = await fetchJson(`/api/instances/${encodeURIComponent(instance.id)}`);
+        instancesState.detail = refreshed.instance;
+        renderInstanceDetail();
+        await loadMods();
+        await loadInstances({ silent: true });
+      } else {
+        await loadPackList(state.kind);
+      }
+      // เช็คซ้ำทันทีเพื่อล้าง/อัปเดตป้ายของไฟล์ที่เพิ่งเปลี่ยน (ข้าม throttle ของ auto-check)
+      instancesState.autoCheckAt[panelId] = 0;
+      await runInstanceCheck([state.kind], { render: renderForKind(state.kind) });
+      return;
+    }
+    const result = await postJson(`/api/instances/${encodeURIComponent(instance.id)}${isMod ? '/mods' : '/packs'}`, {
+      versionId: version.id,
+      ...(isMod ? {} : { kind: state.kind }),
+    });
+    toast(`Installed ${result.files.map((file) => file.filename).join(', ')}`);
+    if (state.button) state.button.textContent = 'INSTALLED';
+    closeVersionPicker({ keepButton: true });
+    if (isMod) {
+      const refreshed = await fetchJson(`/api/instances/${encodeURIComponent(instance.id)}`);
+      instancesState.detail = refreshed.instance;
+      renderInstanceDetail();
+      await loadMods();
+      await loadInstances({ silent: true });
+    } else {
+      await loadPackList(state.kind);
+    }
+  } catch (err) {
+    error.hidden = false;
+    error.textContent = err.message;
+    for (const button of listEl.querySelectorAll('button')) button.disabled = false;
+  }
+}
+
+function closeVersionPicker({ keepButton = false } = {}) {
+  document.getElementById('versionPickModal').hidden = true;
+  const state = versionPickerState;
+  versionPickerState = null;
+  if (!keepButton && state?.button) {
+    state.button.disabled = false;
+    state.button.textContent = state.buttonDefault;
+  }
+}
+
+function setupVersionPicker() {
+  document.getElementById('versionPickCancelBtn')?.addEventListener('click', () => closeVersionPicker());
+  document.getElementById('versionPickModal')?.addEventListener('click', (event) => {
+    if (event.target.id === 'versionPickModal') closeVersionPicker();
+  });
+}
+
+// หน้า GET ต่อ panel — mod/rp/sp มี form/input/error/results คนละชุด
+const SEARCH_PANELS = {
+  mods: { form: 'modSearchForm', input: 'modSearchInput', error: 'modSearchError', results: 'modResults' },
+  rp: { form: 'rpSearchForm', input: 'rpSearchInput', error: 'rpSearchError', results: 'rpResults' },
+  sp: { form: 'spSearchForm', input: 'spSearchInput', error: 'spSearchError', results: 'spResults' },
+};
+
 function setupModSearch() {
   document.getElementById('modSearchForm')?.addEventListener('submit', (event) => {
     event.preventDefault();
     const input = document.getElementById('modSearchInput');
     runModSearch(input.value.trim());
   });
+  document.getElementById('modCheckBtn')?.addEventListener('click', () =>
+    runInstanceCheck(['mods'], { render: renderMods })
+  );
+  document.getElementById('modUpdateAllBtn')?.addEventListener('click', () => runUpdateAll(['mods']));
 }
 
-async function runPackSearch(query) {
-  const results = document.getElementById('packResults');
-  const errorBox = document.getElementById('packSearchError');
-  const typeInput = document.getElementById('packType');
-  const type = typeInput?.value === 'shader' ? 'shader' : 'resourcepack';
+async function runPackSearch(query, panel) {
+  const cfg = SEARCH_PANELS[panel];
+  const type = panel === 'sp' ? 'shader' : 'resourcepack';
+  const kind = panel === 'sp' ? 'shaderpacks' : 'resourcepacks';
+  const results = document.getElementById(cfg.results);
+  const errorBox = document.getElementById(cfg.error);
+  if (!results || !errorBox) return;
   const isPopular = query === '';
   errorBox.hidden = true;
   results.hidden = true;
@@ -2536,7 +4288,6 @@ async function runPackSearch(query) {
       results.hidden = false;
       return;
     }
-    const kind = type === 'shader' ? 'shaderpacks' : 'resourcepacks';
     for (const hit of data.hits) results.appendChild(modResultRow(hit, { kind }));
     results.hidden = false;
   } catch (err) {
@@ -2546,9 +4297,10 @@ async function runPackSearch(query) {
   }
 }
 
-function clearPackSearchResults() {
-  const results = document.getElementById('packResults');
-  const errorBox = document.getElementById('packSearchError');
+function clearSearchResults(panel) {
+  const cfg = SEARCH_PANELS[panel];
+  const results = cfg ? document.getElementById(cfg.results) : null;
+  const errorBox = cfg ? document.getElementById(cfg.error) : null;
   if (results) {
     results.replaceChildren();
     results.hidden = true;
@@ -2559,42 +4311,33 @@ function clearPackSearchResults() {
   }
 }
 
-function ensureDefaultPackSearch() {
-  const results = document.getElementById('packResults');
-  const errorBox = document.getElementById('packSearchError');
+function ensureDefaultSearch(panel) {
+  const cfg = SEARCH_PANELS[panel];
+  if (!cfg) return;
+  const results = document.getElementById(cfg.results);
+  const errorBox = document.getElementById(cfg.error);
   if (!results || !errorBox) return;
-  if (results.childElementCount === 0 && errorBox.hidden) runPackSearch('');
+  if (results.childElementCount === 0 && errorBox.hidden) {
+    if (panel === 'mods') runModSearch('');
+    else runPackSearch('', panel);
+  }
 }
 
 function setupPackSearch() {
-  packSearchDropdowns.type = createDropdown({ containerId: 'packTypeDropdown', valueId: 'packType' });
-  packSearchDropdowns.type?.setOptions(['resourcepack', 'shader']);
-
-  document.getElementById('packSearchForm')?.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const input = document.getElementById('packSearchInput');
-    runPackSearch(input.value.trim());
-  });
-}
-
-function clearModSearchResults() {
-  const results = document.getElementById('modResults');
-  const errorBox = document.getElementById('modSearchError');
-  if (results) {
-    results.replaceChildren();
-    results.hidden = true;
+  for (const [panel, kind] of [['rp', 'resourcepacks'], ['sp', 'shaderpacks']]) {
+    const cfg = SEARCH_PANELS[panel];
+    document.getElementById(cfg.form)?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const input = document.getElementById(cfg.input);
+      runPackSearch(input.value.trim(), panel);
+    });
+    document.getElementById(PROGRESS_PANELS[panel].check)?.addEventListener('click', () =>
+      runInstanceCheck([kind], { render: renderForKind(kind) })
+    );
+    document.getElementById(PROGRESS_PANELS[panel].updateAll)?.addEventListener('click', () =>
+      runUpdateAll([kind])
+    );
   }
-  if (errorBox) {
-    errorBox.hidden = true;
-    errorBox.textContent = '';
-  }
-}
-
-function ensureDefaultModSearch() {
-  const results = document.getElementById('modResults');
-  const errorBox = document.getElementById('modSearchError');
-  if (!results || !errorBox) return;
-  if (results.childElementCount === 0 && errorBox.hidden) runModSearch('');
 }
 
 function main() {
@@ -2603,15 +4346,18 @@ function main() {
   setupInstanceDetail();
   setupImportModal();
   setupExportModal();
-  setupCreateModal();
+  setupCreatePage();
   setupAuth();
   setupServerConfigForm();
   setupOfflineNameForm();
-  setupAuthFlowPicker(); // LIVE FLOW — ลบพร้อม src/auth/live.js
+  setupDataDirForm();
+  setupDisconnectPage();
+  setupPendingBanner();
+  setupInstanceIcons();
   setupJavaRuntimeCard();
   setupModSearch();
   setupPackSearch();
-  setupVersionControls();
+  setupVersionPicker();
   refresh();
   loadSession({ silent: true });
   setInterval(refresh, REFRESH_MS);

@@ -8,12 +8,16 @@ import { InstanceError, ValidationError } from '../core/errors.js';
 import { ensureDir, pathExists, resolveWithin } from '../core/filesystem.js';
 import { hashFile } from '../download/hash.js';
 import { safeVersionId } from '../minecraft/versions.js';
+import { findInstanceIcon } from './icon.js';
 import { SUPPORTED_LOADER, validateInstanceName } from './validate.js';
 
-export const EXPORT_FORMAT_VERSION = 1;
 export const EXPORT_INSTANCE_FILE = 'instance.json';
 export const EXPORT_GAME_DIRS = Object.freeze(['mods', 'config', 'saves', 'resourcepacks', 'shaderpacks']);
 export const EXPORT_GAME_FILES = Object.freeze(['options.txt']);
+// server instance → เอาเฉพาะไฟล์ที่ server ใช้จริง (world + server.properties + eula) ไม่เอา saves/resourcepacks ของ client
+export const EXPORT_SERVER_GAME_DIRS = Object.freeze(['mods', 'config', 'world']);
+export const EXPORT_SERVER_GAME_FILES = Object.freeze(['server.properties', 'eula.txt']);
+export const EXPORT_TYPES = Object.freeze(['client', 'server']);
 export const EXPORT_MAX_NAME_LENGTH = 150;
 export const EXPORT_FORBIDDEN_KEY_PATTERN = /(token|secret|password|credential|authorization|cookie|api[_-]?key|session)/i;
 
@@ -55,16 +59,6 @@ export function validateExportManifest(raw) {
       details: { field: 'manifest', received: raw === null ? 'null' : typeof raw },
     });
   }
-  if (!Number.isInteger(raw.format) || raw.format < 1) {
-    throw manifestInvalid('format', 'must be a positive integer', { received: typeof raw.format === 'number' ? raw.format : typeof raw.format });
-  }
-  if (raw.format > EXPORT_FORMAT_VERSION) {
-    throw new ValidationError(`Export manifest format ${raw.format} is newer than supported format ${EXPORT_FORMAT_VERSION}`, {
-      code: 'EXPORT_MANIFEST_UNSUPPORTED',
-      details: { format: raw.format, supported: EXPORT_FORMAT_VERSION },
-    });
-  }
-
   let name;
   try {
     name = validateInstanceName(raw.name);
@@ -90,17 +84,23 @@ export function validateExportManifest(raw) {
     throw manifestInvalid('fabricLoaderVersion', 'must be a valid Fabric loader version', { cause: err.code ?? null });
   }
 
-  return Object.freeze({ format: raw.format, name, minecraftVersion, loader: raw.loader, fabricLoaderVersion });
+  // เวอร์ชั่นเก่าไม่มี type → ถือเป็น client เสมอ
+  const type = raw.type === undefined || raw.type === null ? 'client' : raw.type;
+  if (!EXPORT_TYPES.includes(type)) {
+    throw manifestInvalid('type', `must be one of: ${EXPORT_TYPES.join(', ')}`, { type: typeof type === 'string' ? type : typeof type });
+  }
+
+  return Object.freeze({ name, minecraftVersion, loader: raw.loader, fabricLoaderVersion, type });
 }
 
 export function buildExportManifest(meta) {
   assertExportableMeta(meta);
   return validateExportManifest({
-    format: EXPORT_FORMAT_VERSION,
     name: meta.name,
     minecraftVersion: meta.minecraftVersion,
     loader: meta.loader,
     fabricLoaderVersion: meta.fabricLoaderVersion,
+    type: meta.type ?? 'client',
   });
 }
 
@@ -200,12 +200,27 @@ export function createInstanceExporter(options = {}) {
 
     entries.push({ name: EXPORT_INSTANCE_FILE, src: null, data: manifestData, dir: false, size: manifestData.length });
 
+    // ไอคอน custom ของ instance (icon.<ext> ชั้นบนสุด) — ให้ import กลับมาได้ครบ
+    const iconName = await findInstanceIcon(paths.dir);
+    if (iconName !== null) {
+      const src = path.join(paths.dir, iconName);
+      try {
+        const stat = await fsp.stat(src);
+        if (stat.isFile()) entries.push({ name: iconName, src, dir: false, size: stat.size });
+      } catch (err) {
+        if (err?.code !== 'ENOENT') throw err;
+      }
+    }
+
     if (await pathExists(paths.gameDir)) {
       entries.push({ name: 'minecraft/', src: null, dir: true, size: 0 });
-      for (const sub of EXPORT_GAME_DIRS) {
+      const isServer = meta.type === 'server';
+      const gameDirs = isServer ? EXPORT_SERVER_GAME_DIRS : EXPORT_GAME_DIRS;
+      const gameFiles = isServer ? EXPORT_SERVER_GAME_FILES : EXPORT_GAME_FILES;
+      for (const sub of gameDirs) {
         await collectDir(paths.gameDir, sub, entries, skipped, instanceId);
       }
-      for (const file of EXPORT_GAME_FILES) {
+      for (const file of gameFiles) {
         const src = path.join(paths.gameDir, file);
         try {
           const stat = await fsp.stat(src);

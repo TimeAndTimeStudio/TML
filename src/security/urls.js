@@ -38,7 +38,6 @@ export const OFFICIAL_SOURCES = Object.freeze({
     label: 'Microsoft / Xbox (Official Authentication)',
     hosts: Object.freeze([
       'login.microsoftonline.com',
-      'login.live.com',
       'user.auth.xboxlive.com',
       'xsts.auth.xboxlive.com',
       'api.minecraftservices.com',

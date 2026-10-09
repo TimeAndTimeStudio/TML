@@ -3,7 +3,6 @@
 // License: GPL-3.0-or-later
 
 import { createMicrosoftAuth } from './microsoft.js';
-import { createLiveAuth } from './live.js'; // LIVE FLOW — ลบ import นี้พร้อม src/auth/live.js
 import { AuthError } from '../core/errors.js';
 
 export function createAuthProvider({
@@ -11,11 +10,9 @@ export function createAuthProvider({
   source = null,
   logger = null,
   factory = createMicrosoftAuth,
-  liveFactory = createLiveAuth, // LIVE FLOW
 } = {}) {
   let client = clientId ? factory({ clientId, logger }) : null;
   let currentSource = clientId ? source : null;
-  const live = liveFactory({ logger }); // LIVE FLOW — ไม่ต้องใช้ client id
 
   function isConfigured() {
     return client !== null;
@@ -34,7 +31,6 @@ export function createAuthProvider({
   return {
     isConfigured,
     requireClient,
-    live, // LIVE FLOW — ระบบ sign-in ทางเลือก (ลบพร้อม src/auth/live.js)
     get source() {
       return currentSource;
     },

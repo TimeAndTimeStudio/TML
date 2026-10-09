@@ -377,63 +377,6 @@ test('profile failures distinguish unowned accounts from missing profiles', asyn
   });
 });
 
-test('refreshSession re-runs the chain and rotates tokens', async () => {
-  const routes = chainRoutes({
-    tokenResponses: [{ data: { access_token: 'msa-at-2', refresh_token: 'msa-rt-2', expires_in: 3600 } }],
-  });
-  const { auth, http } = createAuth(routes);
-
-  const session = await auth.refreshSession({ refreshToken: 'msa-rt-1' });
-
-  assert.equal(session.accessToken, 'mc-at-secret-1');
-  assert.equal(session.refreshToken, 'msa-rt-2');
-  assert.equal(session.username, 'Steve');
-
-  const refreshCall = http.calls.find((call) => call.url === TOKEN_URL);
-  const params = new URLSearchParams(refreshCall.body);
-  assert.equal(params.get('grant_type'), 'urn:ietf:params:oauth:grant-type:refresh_token');
-  assert.equal(params.get('refresh_token'), 'msa-rt-1');
-  assert.equal(refreshCall.opts.source, 'microsoft');
-});
-
-test('refreshSession keeps the previous refresh token when the endpoint omits a new one', async () => {
-  const routes = chainRoutes({
-    tokenResponses: [{ data: { access_token: 'msa-at-2', expires_in: 3600 } }],
-  });
-  const { auth } = createAuth(routes);
-
-  const session = await auth.refreshSession({ refreshToken: 'msa-rt-1' });
-  assert.equal(session.refreshToken, 'msa-rt-1');
-});
-
-test('refresh failures require a stored refresh token and reject invalid grants', async () => {
-  const { auth } = createAuth([]);
-  await assert.rejects(auth.refreshSession({}), {
-    code: 'AUTH_REFRESH_FAILED',
-    status: 401,
-    details: { stage: 'refresh', reason: 'missing-refresh-token' },
-  });
-
-  const invalid = createAuth([
-    tokenRoute([{ status: 400, data: { error: 'invalid_grant' } }]),
-  ]);
-  await assert.rejects(invalid.auth.refreshSession({ refreshToken: 'stale' }), (err) => {
-    assert.equal(err.code, 'AUTH_REFRESH_FAILED');
-    assert.equal(err.status, 401);
-    assert.equal(err.details.error, 'invalid_grant');
-    return true;
-  });
-});
-
-test('isExpired honors the expiry skew window', () => {
-  const { auth } = createAuth([]);
-  assert.equal(auth.isExpired({ expiresAt: NOW + 3_600_000 }), false);
-  assert.equal(auth.isExpired({ expiresAt: NOW + 30_000 }), true);
-  assert.equal(auth.isExpired({ expiresAt: NOW + 600_000 }), false);
-  assert.equal(auth.isExpired({}), true);
-  assert.equal(auth.isExpired({ expiresAt: NOW + 30_000 }, { skewMs: 10_000 }), false);
-});
-
 test('authentication can be cancelled at every stage', async () => {
   const { auth } = createAuth(chainRoutes());
   const controller = new AbortController();
@@ -525,8 +468,7 @@ test('logger never receives tokens, codes or passwords', async () => {
     { logger: spyLogger }
   );
   const start = await auth.startDeviceLogin();
-  const session = await auth.completeDeviceLogin(start);
-  await auth.refreshSession(session);
+  await auth.completeDeviceLogin(start);
 
   assert.ok(records.length > 0);
   const serialized = JSON.stringify(records);

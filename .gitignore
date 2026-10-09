@@ -4,6 +4,12 @@ tml-data/
 node_modules/
 *.tgz
 
+# output ของ pack.sh — ของใหญ่ ไม่ต้องเข้า git
+dist/
+
+# clone ของ TMA — build.sh โคลนใหม่ทุกรันเอง ไม่ต้องเข้า git
+tma/
+
 # skin ที่หลุดมาวางใน root (ไฟล์ hash ชื่อ 40 ตัวอักษร) ห้าม commit
 /*.png
 

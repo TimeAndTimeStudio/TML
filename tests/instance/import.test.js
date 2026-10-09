@@ -110,11 +110,11 @@ test('import creates a fresh instance from an exported archive', async () => {
   assert.notEqual(result.instanceId, survival.id, 'import must generate a new id');
   assert.equal(result.name, 'Survival');
   assert.deepEqual({ ...result.manifest }, {
-    format: 1,
     name: 'Survival',
     minecraftVersion: '1.20.1',
     loader: 'fabric',
     fabricLoaderVersion: '0.15.7',
+    type: 'client',
   });
   assert.equal(result.files, 6);
   assert.ok(result.bytes > 0);
@@ -161,11 +161,11 @@ test('inspect reports the manifest without writing anything', async () => {
 
   const { manifest, entries } = await importer.inspect(survivalZip.path);
   assert.deepEqual({ ...manifest }, {
-    format: 1,
     name: 'Survival',
     minecraftVersion: '1.20.1',
     loader: 'fabric',
     fabricLoaderVersion: '0.15.7',
+    type: 'client',
   });
   assert.ok(Object.isFrozen(manifest));
   assert.equal(entries.some((entry) => entry.normalized === 'instance.json'), true);
@@ -197,12 +197,6 @@ test('malformed archives are rejected before anything is created', async () => {
     { name: 'evil.txt', data: 'x' },
   ]));
   await assert.rejects(importer.import(unknown), (err) => err.code === 'IMPORT_UNKNOWN_ENTRY');
-
-  const futureFormat = path.join(root, 'future.zip');
-  fs.writeFileSync(futureFormat, buildZip([
-    { name: 'instance.json', data: JSON.stringify({ format: 2, name: 'Pack', minecraftVersion: '1.20.1', loader: 'fabric', fabricLoaderVersion: '0.15.7' }) },
-  ]));
-  await assert.rejects(importer.import(futureFormat), (err) => err.code === 'EXPORT_MANIFEST_UNSUPPORTED' && err.details.format === 2);
 
   const forge = path.join(root, 'forge.zip');
   fs.writeFileSync(forge, buildZip([

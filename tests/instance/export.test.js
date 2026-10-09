@@ -14,7 +14,6 @@ import { writeZipFile } from '../../src/archive/zip.js';
 import { extractZip, listZipEntries, readZipEntry } from '../../src/archive/unzip.js';
 import { createInstanceManager } from '../../src/instance/manager.js';
 import {
-  EXPORT_FORMAT_VERSION,
   assertExportableMeta,
   buildExportManifest,
   createInstanceExporter,
@@ -153,11 +152,11 @@ test('plan lists exactly the exportable content of one instance', async () => {
   assert.ok(Object.isFrozen(plan.entries));
   assert.ok(Object.isFrozen(plan.entries[0]));
   assert.deepEqual(plan.manifest, {
-    format: 1,
     name: 'Survival',
     minecraftVersion: '1.20.1',
     loader: 'fabric',
     fabricLoaderVersion: '0.15.7',
+    type: 'client',
   });
   const manifestEntry = plan.entries.find((entry) => entry.name === 'instance.json');
   assert.equal(manifestEntry.src, null, 'instance.json is generated, not copied from disk');
@@ -211,11 +210,11 @@ test('export writes a zip that round-trips through the official reader', async (
   const manifestBytes = await readZipEntry(result.path, metaEntry);
   const manifest = JSON.parse(manifestBytes.toString());
   assert.deepEqual(manifest, {
-    format: 1,
     name: 'Survival',
     minecraftVersion: '1.20.1',
     loader: 'fabric',
     fabricLoaderVersion: '0.15.7',
+    type: 'client',
   });
   assert.equal(manifestBytes.toString(), `${JSON.stringify(manifest, null, 2)}\n`, 'manifest must use the writeJson style');
   const onDisk = JSON.parse(fs.readFileSync(manager.paths(meta.id).metaFile, 'utf8'));
@@ -353,24 +352,23 @@ test('exporter validates collaborators and instance ids', async () => {
   assert.equal(assertExportableMeta(realMeta), realMeta, 'a real instance metadata must pass the secret scan');
 });
 
-test('export manifest format 1 contains exactly the documented fields', async () => {
-  assert.equal(EXPORT_FORMAT_VERSION, 1);
+test('export manifest contains exactly the documented fields', async () => {
   const realMeta = await manager.get(meta.id);
   const manifest = buildExportManifest(realMeta);
-  assert.deepEqual(Object.keys(manifest), ['format', 'name', 'minecraftVersion', 'loader', 'fabricLoaderVersion']);
+  assert.deepEqual(Object.keys(manifest), ['name', 'minecraftVersion', 'loader', 'fabricLoaderVersion', 'type']);
   assert.deepEqual({ ...manifest }, {
-    format: 1,
     name: 'Survival',
     minecraftVersion: '1.20.1',
     loader: 'fabric',
     fabricLoaderVersion: '0.15.7',
+    type: 'client',
   });
   assert.ok(Object.isFrozen(manifest));
   assert.equal(serializeExportManifest(manifest), `${JSON.stringify(manifest, null, 2)}\n`);
   assert.throws(() => assertExportableMeta({ ...realMeta, oauthToken: 'x' }), { code: 'EXPORT_FORBIDDEN_DATA' });
 });
 
-test('validateExportManifest accepts format 1 and rejects malformed manifests', () => {
+test('validateExportManifest accepts manifests (legacy format field ignored) and rejects malformed ones', () => {
   const valid = validateExportManifest({
     format: 1,
     name: 'Survival',
@@ -379,19 +377,14 @@ test('validateExportManifest accepts format 1 and rejects malformed manifests', 
     fabricLoaderVersion: '0.15.7',
     extraField: 'ignored',
   });
-  assert.deepEqual(Object.keys(valid), ['format', 'name', 'minecraftVersion', 'loader', 'fabricLoaderVersion']);
+  assert.deepEqual(Object.keys(valid), ['name', 'minecraftVersion', 'loader', 'fabricLoaderVersion', 'type']);
+  assert.equal(valid.format, undefined, 'legacy format field must not leak into the parsed manifest');
+  assert.deepEqual({ type: valid.type }, { type: 'client' }, 'archives without a type are client instances');
   assert.ok(Object.isFrozen(valid));
 
   assert.throws(() => validateExportManifest(null), (err) => err instanceof ValidationError && err.code === 'EXPORT_MANIFEST_INVALID' && err.details.field === 'manifest');
   assert.throws(() => validateExportManifest('x'), { code: 'EXPORT_MANIFEST_INVALID' });
   assert.throws(() => validateExportManifest([1]), { code: 'EXPORT_MANIFEST_INVALID' });
-  assert.throws(() => validateExportManifest({ format: 0 }), (err) => err.code === 'EXPORT_MANIFEST_INVALID' && err.details.field === 'format');
-  assert.throws(() => validateExportManifest({ format: 1.5 }), { code: 'EXPORT_MANIFEST_INVALID' });
-  assert.throws(() => validateExportManifest({ format: '1' }), { code: 'EXPORT_MANIFEST_INVALID' });
-  assert.throws(
-    () => validateExportManifest({ format: 99, name: 'x', minecraftVersion: '1.20.1', loader: 'fabric', fabricLoaderVersion: '0.15.7' }),
-    (err) => err.code === 'EXPORT_MANIFEST_UNSUPPORTED' && err.details.format === 99 && err.details.supported === 1,
-  );
   assert.throws(
     () => validateExportManifest({ format: 1, name: '', minecraftVersion: '1.20.1', loader: 'fabric', fabricLoaderVersion: '0.15.7' }),
     (err) => err.code === 'EXPORT_MANIFEST_INVALID' && err.details.field === 'name',
@@ -408,6 +401,10 @@ test('validateExportManifest accepts format 1 and rejects malformed manifests', 
     () => validateExportManifest({ format: 1, name: 'ok', minecraftVersion: '1.20.1', loader: 'fabric', fabricLoaderVersion: '' }),
     (err) => err.code === 'EXPORT_MANIFEST_INVALID' && err.details.field === 'fabricLoaderVersion',
   );
+  assert.throws(
+    () => validateExportManifest({ format: 1, name: 'ok', minecraftVersion: '1.20.1', loader: 'fabric', fabricLoaderVersion: '0.15.7', type: 'banana' }),
+    (err) => err.code === 'EXPORT_MANIFEST_INVALID' && err.details.field === 'type',
+  );
 });
 
 test('the manifest written by export survives validation (round-trip for import)', async () => {
@@ -420,7 +417,7 @@ test('the manifest written by export survives validation (round-trip for import)
   const metaEntry = entries.find((entry) => entry.name === 'instance.json');
   const parsed = JSON.parse((await readZipEntry(result.path, metaEntry)).toString());
   const fromZip = validateExportManifest(parsed);
-  assert.equal(fromZip.format, 1);
+  assert.equal(fromZip.format, undefined);
   assert.equal(fromZip.loader, 'fabric');
   assert.equal(fromZip.minecraftVersion, '1.20.1');
 });

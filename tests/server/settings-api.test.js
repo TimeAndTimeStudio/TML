@@ -115,7 +115,7 @@ test('PATCH /api/config rejects invalid values without touching the config', asy
     [{ server: { port: 'not-a-port' } }, 'INVALID_PORT'],
     [{ server: { host: '   ' } }, 'INVALID_HOST'],
     [{ log: { level: 'loud' } }, 'INVALID_LOG_LEVEL'],
-    [{ window: { platform: 'wayland' } }, 'INVALID_WINDOW_PLATFORM'],
+    [{ window: { platform: 'x11' } }, 'INVALID_WINDOW_PLATFORM'],
     [{}, 'CONFIG_PATCH_EMPTY'],
   ];
   for (const [body, code] of cases) {
@@ -132,24 +132,24 @@ test('PATCH /api/config rejects invalid values without touching the config', asy
 test('PATCH /api/config manages the game window platform', async () => {
   const set = await request(port, '/api/config', {
     method: 'PATCH',
-    body: { window: { platform: 'x11' } },
+    body: { window: { platform: 'wayland' } },
   });
   assert.equal(set.status, 200);
   assert.equal(set.json.saved, true);
   assert.deepEqual(set.json.changed, ['window.platform']);
   assert.deepEqual(set.json.restartRequired, [], 'the platform applies to the next launch, not to the server');
-  assert.equal(set.json.config.window.platform, 'x11');
+  assert.equal(set.json.config.window.platform, 'wayland');
 
   const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
-  assert.equal(persisted.window.platform, 'x11');
+  assert.equal(persisted.window.platform, 'wayland');
   assert.equal(persisted.auth.clientId, SEEDED_CLIENT_ID, 'unrelated config keys must survive');
 
   const view = await request(port, '/api/config');
-  assert.equal(view.json.window.platform, 'x11');
+  assert.equal(view.json.window.platform, 'wayland');
 
   const again = await request(port, '/api/config', {
     method: 'PATCH',
-    body: { window: { platform: 'x11' } },
+    body: { window: { platform: 'wayland' } },
   });
   assert.equal(again.status, 200);
   assert.equal(again.json.saved, false, 'patching the same value must be a no-op');
@@ -236,6 +236,17 @@ test('PATCH /api/instances/:id updates name and memory in memory and on disk', a
   });
   assert.equal(noop.status, 200);
   assert.equal(noop.json.instance.name, 'Beta');
+
+  // เปลี่ยน Minecraft version ได้ผ่าน PATCH (ค่าใหม่ถูก validate + เขียนลง meta)
+  const bumped = await request(port, `/api/instances/${created.id}`, {
+    method: 'PATCH',
+    body: { minecraftVersion: '1.20.4' },
+  });
+  assert.equal(bumped.status, 200);
+  assert.equal(bumped.json.instance.minecraftVersion, '1.20.4');
+  const persisted = await manager.get(created.id);
+  assert.equal(persisted.minecraftVersion, '1.20.4', 'the new version must reach disk');
+  assert.equal(persisted.name, 'Beta', 'other fields must stay untouched');
 });
 
 test('PATCH /api/instances/:id validates the patch shape and fields', async () => {
@@ -248,7 +259,8 @@ test('PATCH /api/instances/:id validates the patch shape and fields', async () =
   const cases = [
     [{ name: '' }, 'INVALID_INSTANCE_NAME', 400],
     [{ memory: { min: 'banana', max: '4096M' } }, 'INVALID_MEMORY', 400],
-    [{ minecraftVersion: '1.21' }, 'FIELD_NOT_ALLOWED', 400],
+    [{ minecraftVersion: 'bad@ver' }, 'INVALID_VERSION_ID', 400],
+    [{ bogusField: true }, 'FIELD_NOT_ALLOWED', 400],
     [{ extraJvmArgs: '-Xmx2G' }, 'INVALID_EXTRA_ARGS', 400],
     [{ extraGameArgs: [''] }, 'INVALID_EXTRA_ARGS', 400],
     [[1, 2, 3], 'INVALID_INSTANCE_PATCH', 400],
@@ -310,40 +322,3 @@ test('PATCH /api/config manages the offline player name', async () => {
   assert.equal(after.auth.clientId, SEEDED_CLIENT_ID, 'unrelated auth keys must survive the reset');
 });
 
-// LIVE FLOW — ทดสอบการเลือกวิธี sign in ผ่าน PATCH: ลบบล็อกนี้พร้อม src/auth/live.js
-test('PATCH /api/config manages the sign-in flow', async () => {
-  const set = await request(port, '/api/config', {
-    method: 'PATCH',
-    body: { auth: { flow: 'live' } },
-  });
-  assert.equal(set.status, 200);
-  assert.ok(set.json.changed.includes('auth.flow'));
-  assert.equal(set.json.config.auth.flow, 'live');
-  assert.deepEqual(set.json.restartRequired, [], 'switching the sign-in flow applies immediately');
-
-  const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
-  assert.equal(persisted.auth.flow, 'live');
-  assert.equal(persisted.auth.clientId, SEEDED_CLIENT_ID, 'unrelated auth keys must survive');
-
-  for (const bad of ['bogus', 123, 'AAD', 'aad,live']) {
-    const res = await request(port, '/api/config', {
-      method: 'PATCH',
-      body: { auth: { flow: bad } },
-    });
-    assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(bad)}`);
-    assert.equal(res.json.error.code, 'INVALID_AUTH_FLOW');
-  }
-  const still = await request(port, '/api/config');
-  assert.equal(still.json.auth.flow, 'live', 'a rejected patch must not change the flow');
-
-  const reset = await request(port, '/api/config', {
-    method: 'PATCH',
-    body: { auth: { flow: null } },
-  });
-  assert.equal(reset.status, 200);
-  assert.equal(reset.json.config.auth.flow, 'aad');
-  const after = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
-  assert.equal('flow' in after.auth, false, 'resetting back to the default removes the persisted key');
-  assert.equal(after.auth.clientId, SEEDED_CLIENT_ID, 'unrelated auth keys must survive the reset');
-});
-// /LIVE FLOW

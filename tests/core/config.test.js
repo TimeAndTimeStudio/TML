@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_MSA_CLIENT_ID, DEFAULT_AUTH_FLOW, loadConfig, publicConfig } from '../../src/core/config.js';
+import { DEFAULT_MSA_CLIENT_ID, loadConfig, publicConfig } from '../../src/core/config.js';
 import { ConfigError } from '../../src/core/errors.js';
 
 function tmpDir() {
@@ -113,7 +113,7 @@ test('own Microsoft app client id defaults to the built-in app, overridable by f
     assert.equal(none.auth.source, 'default');
     assert.equal(none.auth.offlineName, null, 'no offline name is configured by default');
     assert.match(DEFAULT_MSA_CLIENT_ID, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'the built-in default must be a GUID');
-    assert.deepEqual(publicConfig(none).auth, { configured: true, source: 'default', offlineName: null, flow: 'aad' });
+    assert.deepEqual(publicConfig(none).auth, { configured: true, source: 'default', offlineName: null });
     assert.ok(!JSON.stringify(publicConfig(none)).includes(DEFAULT_MSA_CLIENT_ID), 'public config must not leak the raw client id');
 
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ auth: { clientId: GUID } }));
@@ -121,7 +121,7 @@ test('own Microsoft app client id defaults to the built-in app, overridable by f
     assert.equal(fromFile.auth.clientId, GUID);
     assert.equal(fromFile.auth.source, 'file');
     const view = publicConfig(fromFile);
-    assert.deepEqual(view.auth, { configured: true, source: 'file', offlineName: null, flow: 'aad' });
+    assert.deepEqual(view.auth, { configured: true, source: 'file', offlineName: null });
     assert.ok(!JSON.stringify(view).includes(GUID), 'public config must not leak the raw client id');
 
     const OTHER = '22222222-3333-4444-5555-666666666666';
@@ -145,18 +145,25 @@ test('invalid Microsoft app client ids raise ConfigError', () => {
   }
 });
 
-// ตัวเลือก platform ของหน้าต่างเกม: 'auto' = ตาม session (Wayland native), 'x11' = บังคับผ่าน XWayland
-test('window.platform defaults to auto, reads x11 from the file and rejects unknown values', () => {
+// ตัวเลือก platform ของหน้าต่างเกม: 'auto' = ตาม session, 'wayland' = บังคับ Wayland เท่านั้น (x11 ถูกถอดออก)
+test('window.platform defaults to auto, reads wayland from the file, maps legacy x11 and rejects unknown values', () => {
   const dir = tmpDir();
   try {
     assert.equal(loadConfig({ env: { TML_DATA_DIR: dir } }).window.platform, 'auto');
 
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ window: { platform: 'x11' } }));
-    const fromFile = loadConfig({ env: { TML_DATA_DIR: dir } });
-    assert.equal(fromFile.window.platform, 'x11');
-    assert.equal(publicConfig(fromFile).window.platform, 'x11');
-
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ window: { platform: 'wayland' } }));
+    const fromFile = loadConfig({ env: { TML_DATA_DIR: dir } });
+    assert.equal(fromFile.window.platform, 'wayland');
+    assert.equal(publicConfig(fromFile).window.platform, 'wayland');
+
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ window: { platform: 'x11' } }));
+    assert.equal(
+      loadConfig({ env: { TML_DATA_DIR: dir } }).window.platform,
+      'auto',
+      'legacy x11 from an old config must fall back to auto',
+    );
+
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ window: { platform: 'mir' } }));
     assert.throws(() => loadConfig({ env: { TML_DATA_DIR: dir } }), ConfigError);
 
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ window: { platform: 'auto' } }));
@@ -166,21 +173,3 @@ test('window.platform defaults to auto, reads x11 from the file and rejects unkn
   }
 });
 
-// LIVE FLOW — ทดสอบการเลือกวิธี sign in: ลบบล็อกนี้พร้อม src/auth/live.js
-test('auth.flow defaults to aad, accepts live and rejects unknown values', () => {
-  const dir = tmpDir();
-  try {
-    assert.equal(DEFAULT_AUTH_FLOW, 'aad', 'the AAD app stays the default until it passes review');
-    const none = loadConfig({ env: { TML_DATA_DIR: dir } });
-    assert.equal(none.auth.flow, 'aad');
-
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ auth: { flow: 'live' } }));
-    assert.equal(loadConfig({ env: { TML_DATA_DIR: dir } }).auth.flow, 'live');
-
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ auth: { flow: 'bogus' } }));
-    assert.throws(() => loadConfig({ env: { TML_DATA_DIR: dir } }), ConfigError);
-  } finally {
-    cleanup(dir);
-  }
-});
-// /LIVE FLOW

@@ -22,7 +22,16 @@ function notFound(id) {
   });
 }
 
-const PATCHABLE_FIELDS = Object.freeze(['name', 'java', 'memory', 'extraJvmArgs', 'extraGameArgs']);
+const PATCHABLE_FIELDS = Object.freeze([
+  'name',
+  'java',
+  'memory',
+  'extraJvmArgs',
+  'extraGameArgs',
+  'minecraftVersion',
+  'port',
+  'eulaAccepted',
+]);
 
 export function createInstanceManager(options = {}) {
   const config = options.config ?? null;
@@ -137,10 +146,23 @@ export function createInstanceManager(options = {}) {
     if (patch.memory !== undefined) next.memory = patch.memory;
     if (patch.extraJvmArgs !== undefined) next.extraJvmArgs = patch.extraJvmArgs;
     if (patch.extraGameArgs !== undefined) next.extraGameArgs = patch.extraGameArgs;
+    if (patch.port !== undefined) next.port = patch.port;
+    if (patch.eulaAccepted !== undefined) next.eulaAccepted = patch.eulaAccepted;
+    if (patch.minecraftVersion !== undefined) {
+      // เปลี่ยนเวอร์ชั่น → จำเวอร์ชั่นก่อนหน้าไว้ให้ UI ย้อนกลับได้ (previousMinecraftVersion ไม่ใช่ field ที่ client ส่งเอง)
+      if (patch.minecraftVersion !== meta.minecraftVersion) {
+        next.previousMinecraftVersion = meta.minecraftVersion;
+      }
+      next.minecraftVersion = patch.minecraftVersion;
+    }
     const updated = validateInstanceMeta(next);
     const changed =
       updated.name !== meta.name ||
       updated.java !== meta.java ||
+      updated.minecraftVersion !== meta.minecraftVersion ||
+      updated.previousMinecraftVersion !== (meta.previousMinecraftVersion ?? null) ||
+      updated.port !== meta.port ||
+      updated.eulaAccepted !== meta.eulaAccepted ||
       JSON.stringify(updated.memory) !== JSON.stringify(meta.memory) ||
       JSON.stringify(updated.extraJvmArgs) !== JSON.stringify(meta.extraJvmArgs ?? []) ||
       JSON.stringify(updated.extraGameArgs) !== JSON.stringify(meta.extraGameArgs ?? []);

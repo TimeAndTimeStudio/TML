@@ -96,3 +96,16 @@ test('clear removes the stored session', async () => {
   assert.equal(await store.read(), null);
   assert.equal(store.publicSession(null), null);
 });
+
+test('an expired session is signed out automatically on the cached path', async () => {
+  await store.save({ ...SESSION, expiresAt: Date.now() - 1000 });
+  assert.equal(await store.read(), null, 'an expired session must not be returned');
+  assert.equal(fs.existsSync(file), false, 'the expired session file must be removed');
+});
+
+test('an expired session file is removed on first read', async () => {
+  fs.writeFileSync(file, JSON.stringify({ ...SESSION, expiresAt: Date.now() - 1000 }, null, 2), { mode: 0o600 });
+  const fresh = createTokenStore({ file });
+  assert.equal(await fresh.read(), null);
+  assert.equal(fs.existsSync(file), false, 'the expired session file must be removed');
+});

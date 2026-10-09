@@ -8,8 +8,10 @@ import process from 'node:process';
 import { readFile } from 'node:fs/promises';
 import { loadConfig } from './core/config.js';
 import { createLogger } from './core/logger.js';
-import { ensureDir } from './core/filesystem.js';
+import { ensureDir, pathExists } from './core/filesystem.js';
 import { assertLinuxPlatform } from './core/platform.js';
+import { JavaRuntimeError } from './core/errors.js';
+import { openBrowser } from './core/browser.js';
 import { createApiRouter } from './server/routes.js';
 import { createTmlServer } from './server/server.js';
 import { createMinecraftApi } from './minecraft/api.js';
@@ -18,6 +20,7 @@ import { createLauncher } from './minecraft/launch.js';
 import { createInstanceManager } from './instance/manager.js';
 import { createInstanceExporter } from './instance/export.js';
 import { createInstanceImporter } from './instance/import.js';
+import { createGameServerManager } from './instance/gameserver.js';
 import { createModInstaller } from './mods/install.js';
 import { createFabricInstaller } from './fabric/installer.js';
 import { createFabricApi } from './fabric/api.js';
@@ -56,8 +59,9 @@ async function printHelp() {
       '  TML_HOST           Bind host (default 127.0.0.1)',
       '  TML_PORT           Bind port (default 8620)',
       '  TML_LOG_LEVEL      debug | info | warn | error | silent (default warn)',
-      '  TML_DATA_DIR       Data directory (default <cwd>/tml-data)',
+      '  TML_DATA_DIR       Data directory (default ~/.tml-launcher)',
       '  TML_MSA_CLIENT_ID  Microsoft Entra (Azure) application client ID (GUID)',
+      '  TML_NO_BROWSER     Set to 1 to skip opening the web UI automatically',
       '',
       'Requirements: Linux, Node.js >= 18.17',
       '',
@@ -135,6 +139,28 @@ async function main() {
     return findMinecraftJava({ ...options, roots });
   }
 
+  // Java สำหรับรัน/ลง server = runtime ที่เลือกไว้ใน Settings (ต้องดาวน์โหลดแล้ว เหมือน PLAY ของ client)
+  async function requireChosenJava() {
+    const chosen = javaRuntimes.getChosen();
+    const runtimes = chosen ? await javaRuntimes.list() : [];
+    const picked = chosen ? runtimes.find((runtime) => runtime.name === chosen) ?? null : null;
+    if (!picked || picked.downloaded !== true) {
+      throw new JavaRuntimeError(
+        'No downloaded Java runtime is selected — open Settings → Java Runtime, download a version and select it, then press START again',
+        { code: 'JAVA_RUNTIME_UNAVAILABLE', status: 409, details: { chosen } },
+      );
+    }
+    const exe = path.join(config.paths.javaDir, chosen, 'bin', 'java');
+    if (!(await pathExists(exe))) {
+      throw new JavaRuntimeError('The selected Java runtime is missing its java binary', {
+        code: 'JAVA_RUNTIME_UNAVAILABLE',
+        status: 409,
+        details: { chosen },
+      });
+    }
+    return { path: exe };
+  }
+
   const launcher = createLauncher({
     config,
     logger,
@@ -144,6 +170,8 @@ async function main() {
   });
   const manager = createInstanceManager({ config, logger, installer: mcInstaller, launcher, fabric });
   managerRef = manager;
+
+  const gameserver = createGameServerManager({ config, logger, manager, getJava: requireChosenJava });
 
   const modrinthInstaller = createModInstaller({ manager, logger });
   const exporter = createInstanceExporter({ manager, writeZip: writeZipFile, exportsDir: config.paths.exportsDir, logger });
@@ -162,7 +190,7 @@ async function main() {
     config,
     logger,
     minecraft,
-    instance: { manager, exporter, importer, installer: modrinthInstaller },
+    instance: { manager, exporter, importer, installer: modrinthInstaller, gameserver },
     auth,
     account,
     modrinth,
@@ -182,6 +210,15 @@ async function main() {
       process.exit(exitCode || 1);
     }, SHUTDOWN_TIMEOUT_MS);
     timer.unref();
+
+    // server ที่ยังรันอยู่ต้องถูกดับก่อน — ไม่งั้น java เป็น orphan ค้างหลัง launcher ปิด
+    await Promise.race([
+      gameserver.shutdown(),
+      new Promise((resolve) => {
+        const stopTimer = setTimeout(resolve, 4000);
+        stopTimer.unref();
+      }),
+    ]).catch(() => {});
 
     if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
     server.close(() => {
@@ -205,6 +242,8 @@ async function main() {
     const url = `http://${config.server.host}:${port}`;
     logger.info('launcher ready', { url });
     process.stdout.write(`\n  TML — Time Mini Launcher\n  ${url}\n\n`);
+    // เปิดหน้าเว็บให้เลยหลังเริ่ม server (Linux เท่านั้น — เงียบถ้าเครื่องไม่มี GUI/xdg-open)
+    if (openBrowser(url)) logger.debug('auto-opening web UI', { url });
   });
 
   process.on('SIGINT', () => shutdown('SIGINT'));

@@ -33,7 +33,7 @@
 
 **Local API and UI**
 - REST API bound to `127.0.0.1` by default (host/port configurable)
-- Settings page edits `config.json` live: host, port, log level, game window platform (`auto` / `x11`), offline name
+- Settings page edits `config.json` live: host, port, log level, game window platform (`auto` / `wayland`), offline name
 - View and manage existing instances: browse `mods`, `config`, `saves`, `resourcepacks`, `shaderpacks` and remove entries
 
 ## Requirements
@@ -75,11 +75,11 @@ On start, TML prints the address to open in a browser:
 
 Stop the server with `Ctrl+C` (graceful shutdown with a 5-second guard).
 
-> **Data directory:** by default, all state is stored in `./tml-data` **relative to the directory where you run `tml`** (instances, logs, cache, exports, `config.json`, account session). When installing globally, either run `tml` from a dedicated working directory or set `TML_DATA_DIR` explicitly.
+> **Data directory:** by default, all state is stored in `~/.tml-launcher` (instances, logs, cache, exports, `config.json`, account session). Set `TML_DATA_DIR` to keep the data somewhere else.
 
 ## Configuration
 
-Precedence: **built-in defaults < `tml-data/config.json` < environment variables.**
+Precedence: **built-in defaults < `~/.tml-launcher/config.json` < environment variables.**
 
 ### Environment variables
 
@@ -88,7 +88,7 @@ Precedence: **built-in defaults < `tml-data/config.json` < environment variables
 | `TML_HOST` | `127.0.0.1` | Bind address |
 | `TML_PORT` | `8620` | HTTP port |
 | `TML_LOG_LEVEL` | `warn` | `debug` \| `info` \| `warn` \| `error` \| `silent` |
-| `TML_DATA_DIR` | `<cwd>/tml-data` | Data directory (instances, logs, config) |
+| `TML_DATA_DIR` | `~/.tml-launcher` | Data directory (instances, logs, config) |
 | `TML_MSA_CLIENT_ID` | built-in value | Microsoft Entra (Azure) application client ID (GUID) |
 
 Values taken from the environment cannot be overridden from `config.json` (the API answers `409 CONFIG_FROM_ENV`).
@@ -109,7 +109,7 @@ Located at `$TML_DATA_DIR/config.json`. Example:
 | --- | --- |
 | `server.host`, `server.port` | Bind address — requires a restart |
 | `log.level` | Applied immediately (also editable in the UI) |
-| `window.platform` | `auto` (system default) or `x11` (XWayland) — applies to the next launch |
+| `window.platform` | `auto` (system default) or `wayland` (native Wayland only) — applies to the next launch |
 | `auth.clientId` | Overrides `TML_MSA_CLIENT_ID` |
 | `auth.offlineName` | Player name used when no Microsoft session exists |
 | `java.runtime` | Selected runtime name, or omitted for automatic selection |
@@ -140,7 +140,6 @@ All endpoints are served under `/api`. Summary:
 | `GET` | `/api/modrinth/project/:id[...]` | Project details and versions |
 | `POST` | `/api/auth/device` | Start device-code sign-in |
 | `POST` | `/api/auth/login` | Wait for approval / complete sign-in |
-| `POST` | `/api/auth/refresh` | Refresh the session token |
 | `GET` / `DELETE` | `/api/auth/session` | Masked session info / sign out |
 | `GET` | `/api/java/runtimes` | List Microsoft OpenJDK runtimes |
 | `POST` | `/api/java/runtimes/:name/download` | Download a runtime (SHA-1 verified) |
@@ -181,7 +180,7 @@ Conventions: ES modules (`"type": "module"`), no third-party packages, English-o
 ## Platform notes
 
 - **Linux only.** The launcher calls `assertLinuxPlatform()` and exits on any other OS.
-- **Game window platform.** SDL video output can be pinned to X11 (XWayland) or left to the system default from **Settings → Launcher** so the window decorations match the desktop theme; the choice applies to the next launch.
+- **Game window platform.** `System (auto)` follows the desktop session; `Wayland only` forces native Wayland (removes `DISPLAY` so the game cannot fall back to XWayland). GNOME draws no decorations for Wayland windows — the game draws its own title bar. The choice applies to the next launch.
 - **Microsoft client ID.** Ships with a default public client ID (an Azure application identifier, not a secret). Replace it with your own via `TML_MSA_CLIENT_ID` if preferred.
 - **Credentials.** The account session is stored at `$TML_DATA_DIR/auth-session.json` with mode `0600`. Tokens are redacted from logs and excluded from exports.
 

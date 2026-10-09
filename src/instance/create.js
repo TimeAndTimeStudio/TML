@@ -24,6 +24,7 @@ export async function createInstance(options = {}) {
   const meta = validateInstanceMeta({
     id,
     name: options.name,
+    type: options.type,
     minecraftVersion: options.minecraftVersion,
     loader: options.loader === undefined ? 'fabric' : options.loader,
     fabricLoaderVersion: options.fabricLoaderVersion,
@@ -31,6 +32,8 @@ export async function createInstance(options = {}) {
     memory: options.memory,
     extraJvmArgs: options.extraJvmArgs,
     extraGameArgs: options.extraGameArgs,
+    port: options.port,
+    eulaAccepted: options.eulaAccepted,
   });
   validateInstanceId(meta.id);
 
