@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=TML
+GenericName=Minecraft Launcher
+Comment=Time Mini Launcher
+Exec=/home/timeandtime/Documents/EDIT/TML/run-tml.sh
+Icon=/home/timeandtime/Documents/EDIT/TML/web/favicon.svg
+Terminal=false
+Categories=Game;
+StartupWMClass=TML

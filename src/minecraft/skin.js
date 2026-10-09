@@ -126,7 +126,7 @@ function skinHttpError(res, stage) {
   if (upstream) base.details.upstream = upstream;
 
   if (status === 401) {
-    return new AuthError('Your Minecraft session has expired — refresh and try again', {
+    return new AuthError('Your Minecraft session has expired — sign in again and try again', {
       ...base,
       status: 401,
       code: 'AUTH_TOKEN_EXPIRED',
@@ -205,7 +205,7 @@ async function newestTextureFile(dir) {
 }
 
 export function createSkinService({ config = null, http = httpClient, logger = null, dir = null } = {}) {
-  // cache ของสกิน = ที่เดียวกับที่เกมเก็บ (tml-data/cache/assets/skins/<xx>/<hash>)
+  // cache ของสกิน = ที่เดียวกับที่เกมเก็บ (~/.tml-launcher/cache/assets/skins/<xx>/<hash>)
   const skinCacheDir =
     dir ?? (config?.paths?.cacheDir ? path.join(config.paths.cacheDir, 'assets', 'skins') : null);
   function requireToken(token) {

@@ -323,6 +323,64 @@ test('getVersion returns one normalized version', async () => {
   assert.equal(client.calls[0].opts.source, 'modrinth');
 });
 
+test('getVersionFiles posts hashes to /version_files, normalizes entries and maps 404 to {}', async () => {
+  const calls = [];
+  const client = {
+    async getJson() {
+      throw new Error('getVersionFiles must not use getJson');
+    },
+    async postJson(url, body, opts) {
+      calls.push({ url, body, opts });
+      return { status: 200, data: { [SHA1]: makeVersion() } };
+    },
+  };
+  const api = createModrinthApi({ client });
+
+  const result = await api.getVersionFiles([SHA1.toUpperCase()]);
+
+  assert.equal(calls[0].url, 'https://api.modrinth.com/v2/version_files');
+  assert.deepEqual(calls[0].body, { hashes: [SHA1], algorithm: 'sha1' });
+  assert.equal(calls[0].opts.source, 'modrinth');
+  assert.ok(Object.isFrozen(result));
+  assert.equal(result[SHA1].id, VERSION_ID);
+  assert.equal(result[SHA1].files[0].sha1, SHA1);
+
+  const missClient = {
+    async getJson() { throw new Error('no'); },
+    async postJson() { return { status: 404, data: null }; },
+  };
+  const missApi = createModrinthApi({ client: missClient });
+  const empty = await missApi.getVersionFiles([SHA512], { algorithm: 'sha512' });
+  assert.deepEqual(empty, {});
+
+  await assert.rejects(api.getVersionFiles([]), { code: 'INVALID_FILE_HASHES' });
+  await assert.rejects(api.getVersionFiles(['not-a-hash']), { code: 'INVALID_FILE_HASHES' });
+  await assert.rejects(api.getVersionFiles([`z${SHA1.slice(1)}`]), { code: 'INVALID_FILE_HASHES' });
+  await assert.rejects(api.getVersionFiles([SHA1], { algorithm: 'md5' }), { code: 'INVALID_HASH_ALGORITHM' });
+  assert.equal(calls.length, 1, 'invalid inputs must not reach the network');
+});
+
+test('getVersionFiles rejects corrupt version_files payloads', async () => {
+  for (const payload of [['not', 'an', 'object'], [null]]) {
+    const client = {
+      async getJson() { throw new Error('no'); },
+      async postJson() { return { status: 200, data: payload }; },
+    };
+    const api = createModrinthApi({ client });
+    await assert.rejects(api.getVersionFiles([SHA1]), (err) => {
+      assert.ok(err instanceof CorruptDataError, `${payload}: expected CorruptDataError`);
+      assert.equal(err.code, 'MODRINTH_RESPONSE_INVALID');
+      return true;
+    });
+  }
+  const badEntry = {
+    async getJson() { throw new Error('no'); },
+    async postJson() { return { status: 200, data: { [SHA1]: { id: VERSION_ID, files: 'nope' } } }; },
+  };
+  const api = createModrinthApi({ client: badEntry });
+  await assert.rejects(api.getVersionFiles([SHA1]), (err) => err instanceof CorruptDataError && err.code === 'MODRINTH_RESPONSE_INVALID');
+});
+
 test('corrupt responses are rejected with MODRINTH_RESPONSE_INVALID', async () => {
   const cases = [
     ['search', (api) => api.search('x'), { hits: [{ slug: 'no-id' }], total_hits: 1, offset: 0, limit: 20 }],

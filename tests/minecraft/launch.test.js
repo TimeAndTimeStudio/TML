@@ -36,7 +36,7 @@ function writeJavaScript(name, body) {
 const ECHO_JAVA = writeJavaScript('echo-java', 'echo "args: $*"\necho "problem" >&2\nexit 7\n');
 const ENV_JAVA = writeJavaScript(
   'env-java',
-  'echo "wayland: ${WAYLAND_DISPLAY:-unset}"\necho "sdl: ${SDL_VIDEO_DRIVER:-unset}"\necho "session: ${XDG_SESSION_TYPE:-unset}"\nexit 0\n',
+  'echo "wayland: ${WAYLAND_DISPLAY:-unset}"\necho "sdl: ${SDL_VIDEO_DRIVER:-unset}"\necho "session: ${XDG_SESSION_TYPE:-unset}"\necho "display: ${DISPLAY:-unset}"\nexit 0\n',
 );
 const SLEEP_JAVA = writeJavaScript('sleep-java', 'exec sleep 30\n');
 
@@ -472,7 +472,7 @@ test('launch spawns java directly, captures output and creates the game director
   assert.ok(lines.length > 0);
 });
 
-test('buildProcessEnv keeps the environment for auto and forces SDL onto X11 for x11', () => {
+test('buildProcessEnv keeps the environment for auto and forces Wayland for wayland', () => {
   const base = {
     WAYLAND_DISPLAY: 'wayland-0',
     WAYLAND_SOCKET: '3',
@@ -483,26 +483,25 @@ test('buildProcessEnv keeps the environment for auto and forces SDL onto X11 for
 
   const auto = buildProcessEnv(undefined, base, { CUSTOM: '1' });
   assert.equal(auto.WAYLAND_DISPLAY, 'wayland-0');
+  assert.equal(auto.DISPLAY, ':0');
   assert.equal(auto.CUSTOM, '1');
   assert.equal('SDL_VIDEO_DRIVER' in auto, false, 'auto must not force a video driver');
   assert.equal(auto.XDG_SESSION_TYPE, 'wayland');
 
-  const x11 = buildProcessEnv('x11', base, { CUSTOM: '1' });
-  assert.equal('WAYLAND_DISPLAY' in x11, false, 'x11 must hide Wayland so SDL/GLFW fall back to XWayland');
-  assert.equal('WAYLAND_SOCKET' in x11, false);
-  assert.equal(x11.DISPLAY, ':0');
-  assert.equal(x11.CUSTOM, '1');
-  // ลบ WAYLAND_DISPLAY อย่างเดียวไม่พอ — libwayland ต่อ default socket "wayland-0" เองได้
-  assert.equal(x11.SDL_VIDEO_DRIVER, 'x11', 'SDL_VIDEO_DRIVER is the override SDL itself documents');
-  assert.equal(x11.SDL_VIDEODRIVER, 'x11');
-  assert.equal(x11.XDG_SESSION_TYPE, 'x11');
+  const wayland = buildProcessEnv('wayland', base, { CUSTOM: '1' });
+  assert.equal('DISPLAY' in wayland, false, 'wayland only must cut off the X11/XWayland path');
+  assert.equal(wayland.WAYLAND_DISPLAY, 'wayland-0');
+  assert.equal(wayland.CUSTOM, '1');
+  assert.equal(wayland.SDL_VIDEO_DRIVER, 'wayland', 'SDL_VIDEO_DRIVER is the override SDL itself documents');
+  assert.equal(wayland.SDL_VIDEODRIVER, 'wayland');
+  assert.equal(wayland.XDG_SESSION_TYPE, 'wayland');
 });
 
 test('launch spawns java with Wayland variables only when the window platform allows it', async () => {
   const { launcher, installer } = makeLauncher({ javaPath: ENV_JAVA });
   const version = makeVersion();
   materialize(installer, await installer.plan(version));
-  const waylandSession = { WAYLAND_DISPLAY: 'wayland-0', XDG_SESSION_TYPE: 'wayland' };
+  const waylandSession = { WAYLAND_DISPLAY: 'wayland-0', XDG_SESSION_TYPE: 'wayland', DISPLAY: ':99' };
 
   const kept = await launcher.launch(version, {
     gameDir: path.join(workDir, 'game-env-auto'),
@@ -512,24 +511,26 @@ test('launch spawns java with Wayland variables only when the window platform al
   const keptOut = kept.output.stdout.join('\n');
   assert.ok(keptOut.includes('wayland: wayland-0'));
   assert.ok(keptOut.includes('session: wayland'));
+  assert.ok(keptOut.includes('display: :99'), 'auto must keep the session DISPLAY');
   assert.ok(!keptOut.includes('sdl: x11'), 'auto must never force the SDL video driver');
 
   const forced = await launcher.launch(version, {
-    gameDir: path.join(workDir, 'game-env-x11'),
-    windowPlatform: 'x11',
+    gameDir: path.join(workDir, 'game-env-wayland'),
+    windowPlatform: 'wayland',
     env: waylandSession,
   });
   assert.equal((await forced.exited).code, 0);
   const forcedOut = forced.output.stdout.join('\n');
   assert.ok(
-    forcedOut.includes('wayland: unset'),
-    'windowPlatform x11 must remove WAYLAND_DISPLAY from the game process env',
+    forcedOut.includes('display: unset'),
+    'windowPlatform wayland must remove DISPLAY so the game cannot fall back to X11/XWayland',
   );
   assert.ok(
-    forcedOut.includes('sdl: x11'),
-    'x11 must set SDL_VIDEO_DRIVER — deleting WAYLAND_DISPLAY alone still lets libwayland connect to wayland-0',
+    forcedOut.includes('sdl: wayland'),
+    'wayland must set SDL_VIDEO_DRIVER — SDL probes x11 as a fallback otherwise',
   );
-  assert.ok(forcedOut.includes('session: x11'));
+  assert.ok(forcedOut.includes('session: wayland'));
+  assert.ok(forcedOut.includes('wayland: wayland-0'), 'wayland must keep the Wayland connection');
 });
 
 test('launch never interprets arguments through a shell', async () => {

@@ -8,20 +8,21 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { AuthError, JavaRuntimeError, NotFoundError, ValidationError } from '../core/errors.js';
+import { AuthError, InstanceError, JavaRuntimeError, NotFoundError, ValidationError } from '../core/errors.js';
 import { ensureDir, pathExists, readJson, removePath, writeJson } from '../core/filesystem.js';
 import { createRouter } from './router.js';
 import {
   publicConfig,
+  writeDataDirPointer,
   VERSION,
   OFFLINE_NAME_PATTERN,
-  AUTH_FLOW_VALUES, // LIVE FLOW — ลบพร้อม src/auth/live.js
-  DEFAULT_AUTH_FLOW, // LIVE FLOW
   WINDOW_PLATFORM_VALUES,
   DEFAULT_WINDOW_PLATFORM,
 } from '../core/config.js';
+import { findInstanceIcon, isIconFilename, sniffImage, ICON_MAX_BYTES, ICON_MIME } from '../instance/icon.js';
 import { listSources } from '../security/urls.js';
 import { validateRuntimeName } from '../java/runtimes.js';
+import { safeVersionId } from '../minecraft/versions.js';
 import { createMinecraftApi } from '../minecraft/api.js';
 import { createSkinService, SKIN_DEFAULT_VARIANT } from '../minecraft/skin.js';
 
@@ -34,11 +35,32 @@ const AUTH_WAIT_TIMEOUT_MS = 4 * 60 * 1000;
 const AUTH_DEVICE_MAX = 32;
 const SEARCH_DEFAULT_LIMIT = 12;
 const VERSIONS_DEFAULT_LIMIT = 20;
+// ไม่กรอง game/loader (เช่น browse resource pack ทุกเวอร์ชี) → คืนให้ครบเท่าที่ Modrinth ให้ (สูงสุด 100)
+const VERSIONS_ALL_LIMIT = 100;
 const LOG_LEVEL_VALUES = ['debug', 'info', 'warn', 'error', 'silent'];
 const LOG_LEVEL_SET = new Set(LOG_LEVEL_VALUES);
 
 function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// body versionIds (อัปเดตหลายไฟล์ครั้งเดียว) → array ของ id หรือ null (เส้นทาง versionId เดี่ยว)
+const BATCH_VERSION_IDS_MAX = 50;
+function readVersionIds(body) {
+  const raw = body?.versionIds;
+  if (raw === undefined || raw === null) return null;
+  if (
+    !Array.isArray(raw) ||
+    raw.length === 0 ||
+    raw.length > BATCH_VERSION_IDS_MAX ||
+    raw.some((value) => typeof value !== 'string' || value === '')
+  ) {
+    throw new ValidationError(
+      `Field "versionIds" must be a non-empty array of version id strings (max ${BATCH_VERSION_IDS_MAX})`,
+      { details: { field: 'versionIds' } }
+    );
+  }
+  return raw;
 }
 
 function wantsRefresh(query) {
@@ -92,13 +114,62 @@ async function streamUpload(req, dest, limitBytes) {
   }
 }
 
-function registerAuthRoutes(router, config, logger, auth, store, getConfig = () => config) {
-  const deviceLogins = new Map();
-
-  // LIVE FLOW — ตัดสินใจว่าใช้ AAD (แอปของตัวเอง) หรือ live (login.live.com) — ลบพร้อม src/auth/live.js
-  function liveFlowSelected() {
-    return getConfig().auth?.flow === 'live';
+// import จาก path บนเครื่อง (ไม่อัปโหลด) — คัดลอก .zip เข้า staging แล้วใช้ flow preview/confirm เดิม
+async function stageImportPath(sourcePath, stagingDir, logger) {
+  if (typeof sourcePath !== 'string' || !path.isAbsolute(sourcePath)) {
+    throw new ValidationError('Field "path" must be an absolute path', {
+      code: 'IMPORT_PATH_NOT_ABSOLUTE',
+      details: { field: 'path' },
+    });
   }
+  if (!sourcePath.toLowerCase().endsWith('.zip')) {
+    throw new ValidationError('Field "path" must point to a .zip archive', {
+      code: 'IMPORT_PATH_NOT_ZIP',
+      details: { field: 'path' },
+    });
+  }
+  let stats;
+  try {
+    stats = await fsp.stat(sourcePath);
+  } catch {
+    throw new NotFoundError(`Archive not found: ${sourcePath}`, {
+      code: 'IMPORT_PATH_NOT_FOUND',
+      details: { path: sourcePath },
+    });
+  }
+  if (!stats.isFile()) {
+    throw new ValidationError('Field "path" must point to a file', {
+      code: 'IMPORT_PATH_NOT_A_FILE',
+      details: { path: sourcePath },
+    });
+  }
+  if (stats.size > IMPORT_UPLOAD_LIMIT_BYTES) {
+    throw new ValidationError('Archive exceeds the import size limit', {
+      code: 'IMPORT_PATH_TOO_LARGE',
+      details: { size: stats.size, limit: IMPORT_UPLOAD_LIMIT_BYTES },
+    });
+  }
+
+  await ensureDir(stagingDir);
+  await sweepStaging(stagingDir, logger);
+  const token = crypto.randomBytes(16).toString('hex');
+  const staged = path.join(stagingDir, `${token}.zip`);
+  try {
+    await fsp.copyFile(sourcePath, staged);
+    await fsp.chmod(staged, 0o600);
+  } catch (err) {
+    await removePath(staged).catch(() => {});
+    throw new ValidationError('Could not read the archive at that path', {
+      code: 'IMPORT_PATH_UNREADABLE',
+      cause: err,
+      details: { path: sourcePath },
+    });
+  }
+  return staged;
+}
+
+function registerAuthRoutes(router, config, logger, auth, store) {
+  const deviceLogins = new Map();
 
   function rememberStart(start) {
     if (deviceLogins.size >= AUTH_DEVICE_MAX) {
@@ -108,11 +179,9 @@ function registerAuthRoutes(router, config, logger, auth, store, getConfig = () 
   }
 
   router.post('/api/auth/device', async () => {
-    // LIVE FLOW — flow 'live' ใช้ login.live.com + title ID (ไม่ต้องรอ review) — ลบพร้อม src/auth/live.js
-    const flow = liveFlowSelected() ? 'live' : 'aad';
-    const client = flow === 'live' ? auth.live : auth.requireClient();
+    const client = auth.requireClient();
     const start = await client.startDeviceLogin();
-    rememberStart({ ...start, flow });
+    rememberStart(start);
     return {
       body: {
         deviceCode: start.deviceCode,
@@ -152,8 +221,7 @@ function registerAuthRoutes(router, config, logger, auth, store, getConfig = () 
       });
     }
 
-    // LIVE FLOW — เลือก client ตาม flow ที่ผูกไว้ตอนขอ device code — ลบพร้อม src/auth/live.js
-    const client = start.flow === 'live' ? auth.live : auth.requireClient();
+    const client = auth.requireClient();
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), AUTH_WAIT_TIMEOUT_MS);
@@ -189,26 +257,8 @@ function registerAuthRoutes(router, config, logger, auth, store, getConfig = () 
       body: {
         ...store.publicSession(session),
         clientConfigured,
-        expired: clientConfigured ? auth.requireClient().isExpired(session) : false,
       },
     };
-  });
-
-  router.post('/api/auth/refresh', async () => {
-    const session = await store.read();
-    if (!session) {
-      throw new AuthError('No account is signed in', { code: 'AUTH_NO_SESSION', status: 401 });
-    }
-    // LIVE FLOW — session จาก live flow ต้อง refresh ผ่าน login.live.com — ลบพร้อม src/auth/live.js
-    const client = session.flow === 'live' ? auth.live : auth.requireClient();
-    try {
-      const fresh = await client.refreshSession(session);
-      const saved = await store.save(fresh);
-      return { body: { session: saved } };
-    } catch (err) {
-      if (err?.status === 401) await store.clear().catch(() => {});
-      throw err;
-    }
   });
 
   router.delete('/api/auth/session', async () => {
@@ -217,8 +267,8 @@ function registerAuthRoutes(router, config, logger, auth, store, getConfig = () 
   });
 }
 
-// เปลี่ยน skin ผ่าน Minecraft Services API — ใช้ accessToken ของ session ที่ล็อกอินไว้ (หมดอายุ → refresh ให้ก่อน)
-function registerSkinRoutes(router, config, logger, auth, account, skin) {
+// เปลี่ยน skin ผ่าน Minecraft Services API — ใช้ accessToken ของ session ที่ล็อกอินไว้ (หมดอายุ → token-store ลบ session ให้เอง)
+function registerSkinRoutes(router, config, logger, account, skin) {
   async function accessToken() {
     const stored = await account.read();
     if (!stored) {
@@ -227,13 +277,6 @@ function registerSkinRoutes(router, config, logger, auth, account, skin) {
         status: 401,
         details: { stage: 'config' },
       });
-    }
-    // LIVE FLOW — session จาก live flow refresh ผ่าน live client — ลบพร้อม src/auth/live.js
-    const client = stored.flow === 'live' && auth.live ? auth.live : auth.requireClient();
-    if (client.isExpired(stored)) {
-      const fresh = await client.refreshSession(stored);
-      await account.save(fresh);
-      return fresh.accessToken;
     }
     return stored.accessToken;
   }
@@ -297,25 +340,16 @@ function registerSkinRoutes(router, config, logger, auth, account, skin) {
 }
 
 function registerInstanceRoutes(router, config, logger, instance, session = null, getConfig = () => config, java = null) {
-  const { manager, exporter = null, importer = null, installer = null } = instance;
+  const { manager, exporter = null, importer = null, installer = null, gameserver = null } = instance;
   const stagingDir = path.join(config.paths.tmpDir, 'import-staging');
+  // สถานะล่าสุดของ POST /check ต่อ instance+kind ให้ UI poll ระหว่างที่คำนวณยังไม่จบ (คล้าย launch-progress)
+  const checkProgress = new Map();
 
   async function launchAuth() {
     if (!session || !session.auth || !session.store) return undefined;
-    let stored = await session.store.read();
+    const stored = await session.store.read();
     if (!stored) return undefined;
-    // LIVE FLOW — session จาก live flow refresh ผ่าน live client — ลบพร้อม src/auth/live.js
-    let client;
-    if (stored.flow === 'live' && session.auth.live) {
-      client = session.auth.live;
-    } else {
-      if (typeof session.auth.isConfigured === 'function' && !session.auth.isConfigured()) return undefined;
-      client = typeof session.auth.requireClient === 'function' ? session.auth.requireClient() : session.auth;
-    }
-    if (client.isExpired(stored)) {
-      stored = await client.refreshSession(stored);
-      await session.store.save(stored);
-    }
+    if (typeof session.auth.isConfigured === 'function' && !session.auth.isConfigured()) return undefined;
     return {
       username: stored.username,
       uuid: stored.uuid,
@@ -332,7 +366,16 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
   }
 
   async function shape(meta) {
-    const status = manager.status(meta.id);
+    const isServer = meta.type === 'server';
+    let status;
+    let installed = null;
+    if (isServer) {
+      // server รันคนละ map กับ client (gameserver) — ไม่งั้น status จะฟ้อง stopped ตลอด
+      status = gameserver ? await gameserver.status(meta.id) : { running: false, pid: null, sessionSeconds: 0 };
+      installed = gameserver ? status.installed : null;
+    } else {
+      status = manager.status(meta.id);
+    }
     let mods = null;
     if (installer && typeof installer.list === 'function') {
       try {
@@ -341,29 +384,63 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
         mods = null;
       }
     }
+    const iconName = await findInstanceIcon(manager.paths(meta.id).dir);
     return {
       id: meta.id,
       name: meta.name,
+      type: meta.type ?? 'client',
       minecraftVersion: meta.minecraftVersion,
+      previousMinecraftVersion: meta.previousMinecraftVersion ?? null,
       loader: meta.loader,
       fabricLoaderVersion: meta.fabricLoaderVersion,
       java: meta.java,
       memory: meta.memory,
       extraJvmArgs: meta.extraJvmArgs ?? [],
       extraGameArgs: meta.extraGameArgs ?? [],
+      port: meta.port ?? 25565,
+      eulaAccepted: meta.eulaAccepted === true,
+      installed,
       running: status.running,
       pid: status.pid,
       sessionSeconds: status.sessionSeconds,
       playSeconds: meta.playSeconds ?? 0,
       lastPlayedAt: meta.lastPlayedAt ?? null,
       mods,
+      icon: iconName !== null,
     };
+  }
+
+  // server routes เฉพาะทาง — instance ที่เป็น client เรียกมาต้องโดนปฏิเสธชัดเจน
+  async function serverMeta(id) {
+    const meta = await manager.get(id);
+    if (meta.type !== 'server') {
+      throw new ValidationError('This instance is a game client — manage it from Instances', {
+        code: 'NOT_SERVER_INSTANCE',
+        status: 400,
+        details: { id, type: meta.type },
+      });
+    }
+    return meta;
+  }
+
+  function requireGameserver() {
+    if (!gameserver) {
+      throw new NotFoundError('Server management is not available', {
+        code: 'GAME_SERVER_UNAVAILABLE',
+        details: { id: null },
+      });
+    }
+    return gameserver;
   }
 
   router.get('/api/instances', async () => {
     const metas = await manager.list();
     const instances = [];
-    for (const meta of metas) instances.push(await shape(meta));
+    // list นี้ = client อย่างเดียว — server แยกขึ้น /api/servers
+    for (const meta of metas) {
+      if (meta.type === 'server') continue;
+      instances.push(await shape(meta));
+    }
     return { body: { count: instances.length, instances } };
   });
 
@@ -382,8 +459,35 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
     return { status: 201, body: { instance: await shape(meta) } };
   });
 
+  router.get('/api/servers', async () => {
+    const metas = await manager.list();
+    const servers = [];
+    for (const meta of metas) {
+      if (meta.type !== 'server') continue;
+      servers.push(await shape(meta));
+    }
+    return { body: { count: servers.length, servers } };
+  });
+
+  router.post('/api/servers', async ({ body }) => {
+    const meta = await manager.create({
+      id: body?.id ?? undefined,
+      name: body?.name,
+      type: 'server',
+      minecraftVersion: body?.minecraftVersion,
+      loader: body?.loader ?? undefined,
+      fabricLoaderVersion: body?.fabricLoaderVersion,
+      java: body?.java ?? undefined,
+      memory: body?.memory ?? undefined,
+      extraJvmArgs: body?.extraJvmArgs ?? undefined,
+      port: body?.port ?? undefined,
+    });
+    return { status: 201, body: { server: await shape(meta) } };
+  });
+
   if (importer) {
-    router.post('/api/instances/import', async ({ req, body, query, upload }) => {
+    // expectedType = 'client' | 'server' — archive ผิดชนิดถูกปฏิเสธตั้งแต่ preview
+    const importHandler = (expectedType) => async ({ req, body, query, upload }) => {
       if (upload) {
         await ensureDir(stagingDir);
         await sweepStaging(stagingDir, logger);
@@ -393,7 +497,7 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
 
         let manifest;
         try {
-          ({ manifest } = await importer.inspect(staged));
+          ({ manifest } = await importer.inspect(staged, { expectedType }));
         } catch (err) {
           await removePath(staged).catch(() => {});
           throw err;
@@ -407,6 +511,25 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
           });
         }
         return { body: { token, manifest, preview: true } };
+      }
+
+      // import จาก path บนเครื่อง — ไม่ใช่ upload (content-type ไม่ใช่ zip) → body = { path }
+      if (typeof body?.path === 'string' && body.path !== '' && typeof body?.token !== 'string') {
+        const preview = query.get('preview');
+        if (preview !== '1' && preview !== 'true') {
+          throw new ValidationError('Path imports must be validated first: use ?preview=1', {
+            code: 'IMPORT_PREVIEW_REQUIRED',
+          });
+        }
+        const staged = await stageImportPath(body.path, stagingDir, logger);
+        let manifest;
+        try {
+          ({ manifest } = await importer.inspect(staged, { expectedType }));
+        } catch (err) {
+          await removePath(staged).catch(() => {});
+          throw err;
+        }
+        return { body: { token: path.basename(staged, '.zip'), manifest, preview: true } };
       }
 
       const token = typeof body?.token === 'string' ? body.token : '';
@@ -425,7 +548,7 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
       }
 
       try {
-        const result = await importer.import(staged, { name: body?.name, id: body?.id });
+        const result = await importer.import(staged, { name: body?.name, id: body?.id, expectedType });
         return {
           status: 201,
           body: {
@@ -439,7 +562,10 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
       } finally {
         await removePath(staged).catch(() => {});
       }
-    });
+    };
+
+    router.post('/api/instances/import', importHandler('client'));
+    router.post('/api/servers/import', importHandler('server'));
   }
 
   router.get('/api/instances/:id', async ({ params }) => {
@@ -453,11 +579,154 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
   });
 
   router.delete('/api/instances/:id', async ({ params }) => {
+    if (gameserver?.isRunning(params.id)) {
+      throw new InstanceError(`Server is running: ${params.id}`, {
+        code: 'INSTANCE_RUNNING',
+        status: 409,
+        details: { id: params.id },
+      });
+    }
     const result = await manager.delete(params.id);
     return { body: { ...result, instanceId: result.id } };
   });
 
+  // ---------- Instance icon (รูปแทน instance — อัปโหลดเป็น raw bytes, sniff magic bytes เอง) ----------
+
+  router.get('/api/instances/:id/icon', async ({ params, res }) => {
+    await manager.get(params.id);
+    const dir = manager.paths(params.id).dir;
+    const name = await findInstanceIcon(dir);
+    if (name === null) {
+      throw new NotFoundError('No icon is set for this instance', {
+        code: 'INSTANCE_ICON_NOT_FOUND',
+        details: { id: params.id },
+      });
+    }
+    const data = await fsp.readFile(path.join(dir, name));
+    res.statusCode = 200;
+    res.setHeader('Content-Type', ICON_MIME[path.extname(name).slice(1).toLowerCase()] ?? 'application/octet-stream');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Length', data.length);
+    res.end(data);
+  });
+
+  router.post('/api/instances/:id/icon', async ({ params, req, upload }) => {
+    if (!upload) {
+      throw new ValidationError('Send the icon image as raw bytes (content-type: application/octet-stream)', {
+        code: 'ICON_UPLOAD_TYPE',
+        details: { field: 'content-type' },
+      });
+    }
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > ICON_MAX_BYTES) {
+        throw new ValidationError('Icon image is too large', {
+          code: 'ICON_TOO_LARGE',
+          details: { limitBytes: ICON_MAX_BYTES },
+        });
+      }
+      chunks.push(chunk);
+    }
+    const data = Buffer.concat(chunks);
+    const kind = sniffImage(data);
+    if (kind === null) {
+      throw new ValidationError('Unsupported image — use a PNG, JPEG, WebP or GIF', {
+        code: 'ICON_UNSUPPORTED_TYPE',
+      });
+    }
+    await manager.get(params.id);
+    const dir = manager.paths(params.id).dir;
+    await ensureDir(dir);
+    for (const existing of await fsp.readdir(dir)) {
+      if (isIconFilename(existing)) await removePath(path.join(dir, existing));
+    }
+    await fsp.writeFile(path.join(dir, `icon.${kind}`), data, { mode: 0o644 });
+    logger.debug('instance icon set', { id: params.id, bytes: data.length, type: kind });
+    return { body: { id: params.id, icon: true } };
+  });
+
+  router.delete('/api/instances/:id/icon', async ({ params }) => {
+    await manager.get(params.id);
+    const dir = manager.paths(params.id).dir;
+    let removed = false;
+    try {
+      for (const existing of await fsp.readdir(dir)) {
+        if (isIconFilename(existing)) {
+          await removePath(path.join(dir, existing));
+          removed = true;
+        }
+      }
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
+    }
+    logger.debug('instance icon removed', { id: params.id, removed });
+    return { body: { id: params.id, icon: false, removed } };
+  });
+
+  // ---------- Servers (Fabric server ในตัว — ชนิดเดียวกับ client จัดการคนละทาง) ----------
+
+  router.get('/api/servers/:id', async ({ params }) => {
+    const meta = await serverMeta(params.id);
+    return { body: { server: await shape(meta) } };
+  });
+
+  router.get('/api/servers/:id/status', async ({ params }) => {
+    await serverMeta(params.id);
+    return { body: await requireGameserver().status(params.id) };
+  });
+
+  router.get('/api/servers/:id/console', async ({ params, query }) => {
+    await serverMeta(params.id);
+    const since = Number.parseInt(String(query.get('since') ?? '0'), 10);
+    return { body: requireGameserver().readConsole(params.id, Number.isFinite(since) ? since : 0) };
+  });
+
+  router.post('/api/servers/:id/install', async ({ params, body }) => {
+    await serverMeta(params.id);
+    const result = await requireGameserver().install(params.id, { force: body?.force === true });
+    return { status: 202, body: { instanceId: result.id, installed: true, skipped: result.skipped === true } };
+  });
+
+  // START = ยังไม่มีไฟล์ก็ลงให้เอง (แบบเดียวกับ PLAY ของ client ที่ลงเกมก่อน)
+  router.post('/api/servers/:id/start', async ({ params }) => {
+    await serverMeta(params.id);
+    const result = await requireGameserver().start(params.id);
+    return {
+      status: 202,
+      body: { instanceId: result.id, running: true, pid: result.pid, port: result.port, installed: result.installed },
+    };
+  });
+
+  router.post('/api/servers/:id/stop', async ({ params }) => {
+    await serverMeta(params.id);
+    const result = await requireGameserver().stop(params.id);
+    return {
+      body: { instanceId: result.id, running: false, code: result.code ?? null, signal: result.signal ?? null },
+    };
+  });
+
+  router.post('/api/servers/:id/eula', async ({ params, body }) => {
+    await serverMeta(params.id);
+    const accept = isPlainObject(body) && body.accept === true;
+    const result = await requireGameserver().setEula(params.id, accept);
+    return { body: { instanceId: result.id, eulaAccepted: result.eulaAccepted } };
+  });
+
   router.post('/api/instances/:id/launch', async ({ params }) => {
+    // มีอยู่จริงค่อยตรวจชนิด (instance ไม่มีจริงต้องยังคืน 404 ตามเดิม — java gate มาก่อน)
+    const existing = await manager.get(params.id).catch((err) => {
+      if (err?.code === 'INSTANCE_NOT_FOUND') return null;
+      throw err;
+    });
+    if (existing?.type === 'server') {
+      throw new InstanceError('This is a server — press START from its server page instead', {
+        code: 'SERVER_INSTANCE',
+        status: 409,
+        details: { id: params.id },
+      });
+    }
     // PLAY ใช้ได้เฉพาะเมื่อผู้ใช้เลือก runtime ที่ดาวน์โหลดมาแล้วไว้เท่านั้น
     if (java) {
       const chosen = typeof java.getChosen === 'function' ? java.getChosen() : null;
@@ -492,6 +761,17 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
   });
 
   router.post('/api/instances/:id/stop', async ({ params }) => {
+    const existing = await manager.get(params.id).catch((err) => {
+      if (err?.code === 'INSTANCE_NOT_FOUND') return null;
+      throw err;
+    });
+    if (existing?.type === 'server') {
+      throw new InstanceError('This is a server — use STOP from its server page instead', {
+        code: 'SERVER_INSTANCE',
+        status: 409,
+        details: { id: params.id },
+      });
+    }
     const result = await manager.stop(params.id);
     return {
       body: {
@@ -505,6 +785,13 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
 
   if (exporter) {
     router.post('/api/instances/:id/export', async ({ params, body }) => {
+      if (gameserver?.isRunning(params.id)) {
+        throw new InstanceError(`Server is running: ${params.id}`, {
+          code: 'INSTANCE_RUNNING',
+          status: 409,
+          details: { id: params.id },
+        });
+      }
       const result = await exporter.export(params.id, {
         name: body?.name ?? undefined,
         path: body?.path ?? undefined,
@@ -539,6 +826,11 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
     });
 
     router.post('/api/instances/:id/mods', async ({ params, body }) => {
+      const versionIds = readVersionIds(body);
+      if (versionIds) {
+        const result = await installer.installMany(params.id, versionIds, { force: body?.force === true });
+        return { status: 201, body: result };
+      }
       const versionId = body?.versionId;
       if (typeof versionId !== 'string' || versionId === '') {
         throw new ValidationError('Field "versionId" must be a non-empty string', {
@@ -584,6 +876,12 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
     });
 
     router.post('/api/instances/:id/packs', async ({ params, body }) => {
+      const versionIds = readVersionIds(body);
+      if (versionIds) {
+        const kind = body?.kind ?? 'mods';
+        const result = await installer.installMany(params.id, versionIds, { force: body?.force === true, kind });
+        return { status: 201, body: result };
+      }
       const versionId = body?.versionId;
       const kind = body?.kind ?? 'mods';
       if (typeof versionId !== 'string' || versionId === '') {
@@ -616,6 +914,129 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
       const kind = query.get('kind') ?? (isPlainObject(body) && typeof body.kind === 'string' ? body.kind : 'mods');
       const result = await installer.remove(params.id, params.fileId, { kind });
       return { body: result };
+    });
+
+    // ไฟล์ที่อัปเดตแล้วไม่รองรับ → ย้ายไป .removed/ พร้อมจดจำเหตุผล เพื่อกู้คืนได้ภายหลัง
+    router.post('/api/instances/:id/removed', async ({ params, body }) => {
+      const payload = isPlainObject(body) ? body : {};
+      const kind = typeof payload.kind === 'string' ? payload.kind : 'mods';
+      const result = await installer.trash(params.id, payload.filename, {
+        kind,
+        reason: payload.reason ?? null,
+        targetVersion: payload.targetVersion ?? null,
+      });
+      return { status: 201, body: result };
+    });
+
+    router.get('/api/instances/:id/removed', async ({ params, query }) => {
+      // ?minecraftVersion=<target> → คำนวณ supported ต่อรายการ (ใช้ตอน auto-restore ไฟล์ที่เวอร์ชั่นเป้าหมายรองรับแล้ว)
+      let minecraftVersion = null;
+      const rawVersion = query.get('minecraftVersion');
+      if (typeof rawVersion === 'string' && rawVersion !== '') minecraftVersion = safeVersionId(rawVersion);
+      const removed = await installer.listRemoved(params.id, { minecraftVersion });
+      return { body: { instanceId: params.id, count: removed.length, removed } };
+    });
+
+    router.post('/api/instances/:id/removed/restore', async ({ params, body }) => {
+      const payload = isPlainObject(body) ? body : {};
+      const kind = typeof payload.kind === 'string' ? payload.kind : 'mods';
+      const result = await installer.restore(params.id, payload.filename, { kind });
+      return { body: result };
+    });
+
+    // เช็คไฟล์ .jar/.zip กับ Modrinth (hash) → ถ้าตรงเพิ่มเข้า registry + เทียบเวอร์ชีว่ามีอัปเดตไหม
+    router.post('/api/instances/:id/check', async ({ params, body }) => {
+      if (typeof installer.check !== 'function') {
+        throw new NotFoundError('File check is not available for this instance', {
+          code: 'INSTANCE_CHECK_UNAVAILABLE',
+          details: { id: params.id },
+        });
+      }
+      const kind = isPlainObject(body) && typeof body.kind === 'string' ? body.kind : 'mods';
+      // slot ต่อ instance+kind → เช็คหลาย kind พร้อมกันได้ (เหมือนกัน kind เดียวกันยังกัน 409 ซ้ำอยู่)
+      const slots = checkProgress.get(params.id) ?? new Map();
+      const running = slots.get(kind);
+      if (running?.running) {
+        throw new ValidationError('A file check is already running for this instance', {
+          code: 'CHECK_ALREADY_RUNNING',
+          status: 409,
+          details: { id: params.id, kind },
+        });
+      }
+      const adopt = !(isPlainObject(body) && body.adopt === false);
+      // minecraftVersion ใน body = ดูความเข้ากันได้กับเวอร์ชีที่ยังไม่บันทึก (preview ก่อนกด SAVE)
+      let minecraftVersion = null;
+      if (isPlainObject(body) && body.minecraftVersion !== undefined && body.minecraftVersion !== null) {
+        minecraftVersion = safeVersionId(body.minecraftVersion);
+      }
+      const slot = {
+        instanceId: params.id,
+        kind,
+        running: true,
+        phase: 'start',
+        current: 0,
+        total: 0,
+        message: 'Starting…',
+        startedAt: Date.now(),
+        finishedAt: null,
+      };
+      slots.set(kind, slot);
+      checkProgress.set(params.id, slots);
+      try {
+        const result = await installer.check(params.id, {
+          kind,
+          adopt,
+          ...(minecraftVersion ? { minecraftVersion } : {}),
+          onProgress: (progress) => {
+            slot.phase = progress.phase;
+            slot.current = progress.current;
+            slot.total = progress.total;
+            slot.message = progress.message;
+          },
+        });
+        slot.running = false;
+        slot.phase = 'done';
+        slot.message = 'Check complete';
+        slot.finishedAt = Date.now();
+        return { body: result };
+      } catch (err) {
+        slot.running = false;
+        slot.phase = 'error';
+        slot.message = err?.message ?? 'Check failed';
+        slot.finishedAt = Date.now();
+        throw err;
+      }
+    });
+
+    router.get('/api/instances/:id/check-progress', async ({ params }) => {
+      const slots = [...(checkProgress.get(params.id)?.values() ?? [])];
+      if (slots.length === 0) {
+        return {
+          body: { instanceId: params.id, running: false, phase: 'idle', current: 0, total: 0, message: '' },
+        };
+      }
+      const runningSlots = slots.filter((slot) => slot.running);
+      // มีหลาย kind วิ่งพร้อมกัน → รวม current/total ทุก slot และเอา slot ล่าสุดเป็นตัวแทน phase/message
+      const source =
+        runningSlots.length > 0
+          ? runningSlots.reduce((a, b) => (a.startedAt > b.startedAt ? a : b))
+          : slots.reduce((a, b) => ((a.finishedAt ?? 0) >= (b.finishedAt ?? 0) ? a : b));
+      return {
+        body: {
+          instanceId: params.id,
+          running: runningSlots.length > 0,
+          phase: source.phase,
+          current: slots.reduce((sum, slot) => sum + (slot.current ?? 0), 0),
+          total: slots.reduce((sum, slot) => sum + (slot.total ?? 0), 0),
+          message: source.message,
+          startedAt: Math.min(...slots.map((slot) => slot.startedAt)),
+          finishedAt:
+            runningSlots.length > 0
+              ? null
+              : Math.max(...slots.map((slot) => slot.finishedAt ?? slot.startedAt)),
+          kind: source.kind ?? null,
+        },
+      };
     });
   }
 
@@ -663,8 +1084,8 @@ export function createApiRouter({
     });
   }
   if (auth && account) {
-    registerAuthRoutes(router, config, logger, auth, account, () => liveConfig); // LIVE FLOW: getConfig
-    registerSkinRoutes(router, config, logger, auth, account, skinApi);
+    registerAuthRoutes(router, config, logger, auth, account);
+    registerSkinRoutes(router, config, logger, account, skinApi);
   }
 
   if (instance && instance.manager) {
@@ -747,7 +1168,9 @@ export function createApiRouter({
     router.get('/api/modrinth/project/:id/versions', async ({ params, query }) => {
       const game = query.get('game');
       const loader = query.get('loader');
-      const filters = { limit: VERSIONS_DEFAULT_LIMIT };
+      const filters = {
+        limit: game || loader ? VERSIONS_DEFAULT_LIMIT : VERSIONS_ALL_LIMIT,
+      };
       if (game) filters.gameVersions = [game];
       if (loader) filters.loaders = [loader];
 
@@ -913,19 +1336,79 @@ export function createApiRouter({
     const javaPatch = isPlainObject(patch.java) ? patch.java : null;
     const authPatch = isPlainObject(patch.auth) ? patch.auth : null;
     const windowPatch = isPlainObject(patch.window) ? patch.window : null;
-    if (!serverPatch && !logPatch && !javaPatch && !authPatch && !windowPatch) {
-      throw new ValidationError('Provide a "server", "log", "java", "auth" or "window" object to update', {
+    const dataDirPatch = patch.dataDir !== undefined && patch.dataDir !== null ? patch.dataDir : null;
+    if (!serverPatch && !logPatch && !javaPatch && !authPatch && !windowPatch && dataDirPatch === null) {
+      throw new ValidationError('Provide a "server", "log", "java", "auth", "window" or "dataDir" field to update', {
         code: 'CONFIG_PATCH_EMPTY',
-        details: { fields: ['server', 'log', 'java', 'auth', 'window'] },
+        details: { fields: ['server', 'log', 'java', 'auth', 'window', 'dataDir'] },
       });
     }
 
     const next = { host: liveConfig.server.host, port: liveConfig.server.port, level: liveConfig.log.level };
     let nextJava = liveConfig.java?.runtime ?? null;
     let nextOfflineName = liveConfig.auth?.offlineName ?? null;
-    let nextFlow = liveConfig.auth?.flow ?? DEFAULT_AUTH_FLOW; // LIVE FLOW
     let nextWindowPlatform = liveConfig.window?.platform ?? DEFAULT_WINDOW_PLATFORM;
+    let nextDataDir = null;
     const changedFields = [];
+
+    if (dataDirPatch !== null) {
+      if (liveConfig.dataDirFromEnv) {
+        throw new ValidationError('dataDir comes from the TML_DATA_DIR environment variable — change it there instead', {
+          code: 'CONFIG_FROM_ENV',
+          status: 409,
+          details: { field: 'dataDir' },
+        });
+      }
+      if (typeof dataDirPatch !== 'string' || dataDirPatch.trim() === '') {
+        throw new ValidationError('Field "dataDir" must be a non-empty string', {
+          code: 'INVALID_DATA_DIR',
+          details: { field: 'dataDir' },
+        });
+      }
+      nextDataDir = path.resolve(dataDirPatch.trim());
+      const currentDataDir = liveConfig.paths.dataDir;
+      if (nextDataDir === currentDataDir) {
+        throw new ValidationError('The new data directory is already the current one', {
+          code: 'DATA_DIR_UNCHANGED',
+          details: { field: 'dataDir', path: nextDataDir },
+        });
+      }
+      if (nextDataDir.startsWith(currentDataDir + path.sep)) {
+        throw new ValidationError('The data directory cannot be moved inside itself', {
+          code: 'DATA_DIR_INSIDE',
+          details: { field: 'dataDir', path: nextDataDir },
+        });
+      }
+      // target ต้องยังไม่มีหรือเป็น folder ว่าง — กันไฟล์ชนกันตอนย้าย
+      try {
+        const stat = await fsp.stat(nextDataDir);
+        if (!stat.isDirectory()) {
+          throw new ValidationError('The target path exists and is not a folder', {
+            code: 'DATA_DIR_NOT_A_DIRECTORY',
+            details: { field: 'dataDir', path: nextDataDir },
+          });
+        }
+        const existing = await fsp.readdir(nextDataDir);
+        if (existing.length > 0) {
+          throw new ValidationError('The target folder must be empty or not exist', {
+            code: 'DATA_DIR_NOT_EMPTY',
+            details: { field: 'dataDir', path: nextDataDir },
+          });
+        }
+      } catch (err) {
+        if (err?.code === 'ENOENT') {
+          /* ยังไม่มี folder → ตอน restart applyDataDirMoveSync จะสร้างให้ */
+        } else if (err instanceof ValidationError) {
+          throw err;
+        } else {
+          throw new ValidationError('The target folder cannot be used', {
+            code: 'DATA_DIR_INVALID_TARGET',
+            cause: err,
+            details: { field: 'dataDir', path: nextDataDir },
+          });
+        }
+      }
+    }
 
     if (serverPatch && serverPatch.host !== undefined) {
       if (liveConfig.server.hostFromEnv) {
@@ -1007,23 +1490,7 @@ export function createApiRouter({
       if (nextOfflineName !== (liveConfig.auth?.offlineName ?? null)) changedFields.push('auth.offlineName');
     }
 
-    // LIVE FLOW — auth.flow เลือกวิธี sign in — ลบบล็อกนี้พร้อม src/auth/live.js
-    if (authPatch && authPatch.flow !== undefined) {
-      const rawFlow = authPatch.flow;
-      if (rawFlow !== null && (typeof rawFlow !== 'string' || !AUTH_FLOW_VALUES.includes(rawFlow))) {
-        throw new ValidationError(
-          `Field "auth.flow" must be one of: ${AUTH_FLOW_VALUES.join(', ')} or null`,
-          {
-            code: 'INVALID_AUTH_FLOW',
-            details: { field: 'auth.flow', known: [...AUTH_FLOW_VALUES] },
-          },
-        );
-      }
-      nextFlow = rawFlow === null ? DEFAULT_AUTH_FLOW : rawFlow;
-      if (nextFlow !== (liveConfig.auth?.flow ?? DEFAULT_AUTH_FLOW)) changedFields.push('auth.flow');
-    }
-
-    // ตัวเลือก platform ของหน้าต่างเกม: 'auto' = ตาม session (Wayland native), 'x11' = ผ่าน XWayland
+    // ตัวเลือก platform ของหน้าต่างเกม: 'auto' = ตาม session, 'wayland' = บังคับ Wayland เท่านั้น
     if (windowPatch && windowPatch.platform !== undefined) {
       const rawPlatform = windowPatch.platform;
       const platform = typeof rawPlatform === 'string' ? rawPlatform.trim().toLowerCase() : rawPlatform;
@@ -1039,8 +1506,12 @@ export function createApiRouter({
       }
     }
 
+    if (nextDataDir !== null) changedFields.push('dataDir');
+
     const saved = changedFields.length > 0;
-    const restartRequired = changedFields.some((field) => field.startsWith('server.')) ? ['server'] : [];
+    const restartRequired = [];
+    if (changedFields.some((field) => field.startsWith('server.'))) restartRequired.push('server');
+    if (changedFields.includes('dataDir')) restartRequired.push('dataDir');
     if (changedFields.includes('log.level')) logger.setLevel(next.level);
     if (changedFields.includes('java.runtime') && typeof java?.setChosen === 'function') java.setChosen(nextJava);
 
@@ -1053,7 +1524,6 @@ export function createApiRouter({
       auth: {
         ...(liveConfig.auth ?? {}),
         offlineName: nextOfflineName,
-        flow: nextFlow, // LIVE FLOW — ลบ key นี้พร้อม src/auth/live.js
       },
     };
 
@@ -1088,14 +1558,16 @@ export function createApiRouter({
           if (nextOfflineName === null) delete nextFile.auth.offlineName;
           else nextFile.auth.offlineName = nextOfflineName;
         }
-        if (changedFields.includes('auth.flow')) {
-          // LIVE FLOW — persist auth.flow — ลบพร้อม src/auth/live.js
-          if (nextFlow === DEFAULT_AUTH_FLOW) delete nextFile.auth.flow;
-          else nextFile.auth.flow = nextFlow;
-        }
       }
       await writeJson(config.paths.configFile, nextFile);
       logger.info('launcher configuration updated', { changed: changedFields, restartRequired });
+    }
+
+    // เขียน pointer { dataDir, from } — ย้ายข้อมูลจริงตอน start รอบถัดไป (applyDataDirMoveSync)
+    // server ยังรันด้วย data dir เดิมต่อได้จนกว่าจะ restart
+    if (nextDataDir !== null) {
+      writeDataDirPointer(nextDataDir, { from: liveConfig.paths.dataDir });
+      logger.info('data directory move scheduled', { from: liveConfig.paths.dataDir, to: nextDataDir });
     }
 
     const view = publicConfig(liveConfig);

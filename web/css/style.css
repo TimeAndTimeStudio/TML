@@ -1,3 +1,44 @@
+/* Inter (SIL OFL) — TTF ทั้งหมดดาวน์โหลดจาก Google Fonts เก็บไว้ใน web/fonts/ ใช้จากในเครื่องเท่านั้น */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/inter-400.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/inter-500.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../fonts/inter-600.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/inter-700.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url('../fonts/inter-800.ttf') format('truetype');
+}
+
+[hidden] {
+  display: none !important;
+}
+
 :root {
   --bg: #0e0e11;
   --bg-1: #141417;
@@ -12,9 +53,11 @@
   --accent-2: #ffc061;
   --danger: #ff7a6e;
   --warn: #ffd166;
-  --radius: 8px;
-  --radius-sm: 6px;
-  --font: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* ธีมเหลี่ยม — มุมมนทุกจุด = 0 */
+  --radius: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --font: 'Inter', ui-sans-serif, system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
 }
@@ -50,22 +93,11 @@ code {
 .app {
   height: 100vh;
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: 1fr;
   min-width: 320px;
 }
 
-/* ---------- topbar ---------- */
-
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 18px;
-  background: rgba(20, 20, 23, 0.85);
-  border-bottom: 1px solid var(--border);
-  backdrop-filter: blur(8px);
-}
+/* ---------- brand (หัว sidebar) ---------- */
 
 .brand {
   display: flex;
@@ -102,54 +134,38 @@ code {
   color: var(--muted);
 }
 
-.topbar-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .pill {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   padding: 5px 11px;
-  border-radius: 999px;
+  border-radius: 0;
   border: 1px solid var(--border);
   background: var(--bg-2);
   font-size: 12px;
   color: var(--muted);
 }
 
-.pill .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted);
-}
-
-.pill[data-state="online"] .dot {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px rgba(255, 138, 30, 0.18);
-}
-
-.pill[data-state="offline"] .dot {
-  background: var(--danger);
-  box-shadow: 0 0 0 3px rgba(255, 122, 110, 0.18);
-}
-
-.pill[data-state="online"] {
-  color: var(--text);
-}
-
 .pill-muted {
   font-family: var(--mono);
 }
 
+/* ป้ายชื่อใน sidebar = ปุ่มเปิด account (แทนปุ่ม Account เดิม) */
+button.pill {
+  cursor: pointer;
+}
+
+button.pill:hover {
+  color: var(--text);
+}
+
 /* ---------- shell ---------- */
 
+/* desktop เท่านั้น — ไม่รองรับ tablet/mobile: หน้าต่างแคบกว่านี้เลื่อนแนวนอน ไม่ยุบ layout */
 .shell {
   display: grid;
-  grid-template-columns: 232px 1fr;
+  grid-template-columns: 260px 1fr;
+  min-width: 1040px;
   min-height: 0;
 }
 
@@ -157,10 +173,18 @@ code {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 18px 14px;
+  padding: 16px 14px;
   background: rgba(17, 17, 20, 0.7);
   border-right: 1px solid var(--border);
+  min-height: 0;
   overflow-y: auto;
+}
+
+.sidebar .brand {
+  flex-shrink: 0;
+  padding: 0 8px 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
 }
 
 .sidebar-label {
@@ -218,6 +242,136 @@ code {
   align-items: center;
   justify-content: center;
   color: var(--accent-2);
+}
+
+/* ---------- quick instances (ลัดบน sidebar แบบ Modrinth) ---------- */
+
+.side-quick {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  margin-top: 14px;
+}
+
+.side-quick[hidden] {
+  display: none;
+}
+
+.side-quick .sidebar-label {
+  margin-top: 0;
+}
+
+.side-quick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.side-quick-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.side-quick-item:hover:not(:disabled) {
+  background: rgba(255, 138, 30, 0.12);
+  border-color: rgba(255, 138, 30, 0.35);
+  color: #ffeccc;
+}
+
+.side-quick-item.is-active {
+  background: rgba(255, 138, 30, 0.12);
+  border-color: rgba(255, 138, 30, 0.35);
+  color: #ffeccc;
+}
+
+.side-quick-icon {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  object-fit: cover;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--accent-2);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.side-quick-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.side-quick-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.side-quick-meta {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.side-quick-run {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  background: var(--accent);
+}
+
+/* ---------- sidebar footer (version / account) ---------- */
+
+.sidebar-foot {
+  margin-top: auto;
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.side-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* version pill เต็มความกว้างของ footer */
+.side-status .pill {
+  flex: 1;
+  justify-content: center;
+}
+
+.side-account {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.side-account #accountPill {
+  flex: 1;
+  justify-content: center;
 }
 
 /* ---------- main / views ---------- */
@@ -286,6 +440,9 @@ code {
 /* dropdown ทุกจุดเป็น custom (.dropdown) — ไม่ใช้ <select> ของ browser อีก */
 
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 10px 18px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
@@ -294,6 +451,9 @@ code {
   font: inherit;
   font-weight: 700;
   letter-spacing: 0.05em;
+  /* ชดเชย letter-spacing ท้ายข้อความ (เบราว์เซอร์เว้น 0.05em หลังตัวอักษรตัวสุดท้ายเสมอ)
+     ทำให้ข้อความจริงถูกเลื่อนไปทางซ้าย — text-indent 0.05em ดึงกลับมากึ่งกลางพอดี */
+  text-indent: 0.05em;
   cursor: pointer;
   transition: transform 0.1s ease, background 0.15s ease, border-color 0.15s ease;
 }
@@ -447,14 +607,6 @@ input[type="file"]:focus {
   border-color: rgba(255, 192, 97, 0.6);
 }
 
-.versions-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
-
 .segmented {
   display: flex;
   gap: 4px;
@@ -486,158 +638,11 @@ input[type="file"]:focus {
   color: #ffd9a8;
 }
 
-.versions-toolbar .pill {
-  margin-left: auto;
-}
-
 .btn-ghost {
   background: transparent;
   font-size: 11.5px;
   padding: 8px 14px;
   letter-spacing: 0.08em;
-}
-
-.versions-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
-  gap: 16px;
-}
-
-.versions-list {
-  max-height: 62vh;
-  overflow-y: auto;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
-  background: var(--bg-2);
-}
-
-.versions-list > .muted {
-  padding: 14px;
-}
-
-.version-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 92px 108px;
-  gap: 10px;
-  align-items: center;
-  width: 100%;
-  padding: 9px 12px;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--border-soft);
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.version-row:hover {
-  background: rgba(255, 192, 97, 0.07);
-}
-
-.version-row.is-active {
-  background: rgba(255, 138, 30, 0.12);
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-
-.version-id {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.version-date {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--muted);
-  text-align: right;
-}
-
-.version-type {
-  justify-self: start;
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-3);
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.version-type.t-release {
-  color: #ffeccc;
-  border-color: rgba(255, 138, 30, 0.4);
-  background: rgba(255, 138, 30, 0.12);
-}
-
-.version-type.t-snapshot {
-  color: #ffd9a8;
-  border-color: rgba(255, 192, 97, 0.4);
-  background: rgba(255, 192, 97, 0.12);
-}
-
-.version-type.t-old_beta {
-  color: #ffeccc;
-  border-color: rgba(255, 209, 102, 0.4);
-  background: rgba(255, 209, 102, 0.12);
-}
-
-.version-type.t-old_alpha {
-  color: #ffd9d9;
-  border-color: rgba(255, 122, 110, 0.4);
-  background: rgba(255, 122, 110, 0.12);
-}
-
-.version-detail {
-  align-self: start;
-  position: sticky;
-  top: 0;
-  padding: 16px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
-  background: var(--bg-2);
-}
-
-.version-detail-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 14px;
-}
-
-.version-detail-head h3 {
-  margin: 0;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 15px;
-  letter-spacing: 0;
-  text-transform: none;
-  overflow-wrap: anywhere;
-}
-
-.version-detail .facts dd {
-  max-width: 210px;
-}
-
-.chip {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 2px 7px;
-  border-radius: var(--radius-sm);
-  background: rgba(255, 192, 97, 0.14);
-  border: 1px solid rgba(255, 192, 97, 0.35);
-  color: var(--accent-2);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  vertical-align: middle;
 }
 
 /* ---------- toast ---------- */
@@ -679,48 +684,262 @@ input[type="file"]:focus {
   }
 }
 
-/* ---------- responsive ---------- */
+/* ---------- pending banner (หลังเปลี่ยน data dir — รอ restart) ---------- */
 
-@media (max-width: 860px) {
-  .shell {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-  }
+.pending-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 9px 14px;
+  background: var(--accent);
+  border-bottom: 2px solid var(--accent-dim);
+  color: #1a0e02;
+  font-size: 13px;
+  font-weight: 700;
+}
 
-  .sidebar {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    padding: 10px;
-    gap: 6px;
-  }
+.pending-banner[hidden] {
+  display: none;
+}
 
-  .sidebar-label {
-    display: none;
-  }
+.pending-banner-close {
+  border: none;
+  background: transparent;
+  color: #1a0e02;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 3px;
+}
 
-  .nav-item {
-    width: auto;
-    padding: 8px 11px;
-  }
+/* ---------- disconnect page (หน้า error แยก — backend หลุด) ---------- */
 
-  .main {
-    padding: 18px 16px 32px;
-  }
+.disconnect-page {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg-1);
+  text-align: center;
+  overflow: hidden;
+}
 
-  .versions-body {
-    grid-template-columns: 1fr;
-  }
+/* glow สี danger จางๆ รอบ artwork */
+.disconnect-page::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(560px 340px at 50% 44%, rgba(255, 122, 110, 0.11), transparent 68%);
+  pointer-events: none;
+}
 
-  .version-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
+.disconnect-page[hidden] {
+  display: none;
+}
 
-  .version-date {
-    display: none;
+.disconnect-box {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.disconnect-art {
+  width: min(360px, 76vw);
+  height: auto;
+}
+
+.disconnect-art .dc-ring {
+  stroke: var(--muted);
+  opacity: 0.42;
+}
+
+.disconnect-art .dc-seat {
+  fill: var(--bg-2);
+  stroke: var(--border);
+  stroke-width: 2;
+}
+
+/* วงแหวน danger วิ่งขยายรอบ emblem */
+.disconnect-art .dc-pulse {
+  stroke: var(--danger);
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: dc-pulse 2.8s ease-out infinite;
+}
+
+@keyframes dc-pulse {
+  0% {
+    transform: scale(0.72);
+    opacity: 0.55;
   }
+  70%,
+  100% {
+    transform: scale(1.16);
+    opacity: 0;
+  }
+}
+
+.disconnect-art .dc-cable {
+  stroke: var(--muted);
+  stroke-width: 7.5;
+  fill: none;
+}
+
+.disconnect-art .dc-body {
+  fill: var(--bg-3);
+  stroke: var(--danger);
+  stroke-width: 8;
+}
+
+.disconnect-art .dc-prong {
+  fill: var(--danger);
+}
+
+.disconnect-art .dc-spark {
+  fill: var(--danger);
+  filter: drop-shadow(0 0 10px rgba(255, 122, 110, 0.55));
+  animation: dc-blink 2.4s ease-in-out infinite;
+}
+
+.disconnect-art .dc-chip {
+  fill: var(--accent);
+  animation: dc-blink 2.4s ease-in-out infinite;
+}
+
+.disconnect-art .dc-chip:last-of-type {
+  animation-delay: 1.2s;
+}
+
+@keyframes dc-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.disconnect-box h1 {
+  margin: 0;
+  font-size: clamp(34px, 8vw, 88px);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--danger);
+}
+
+.disconnect-box .muted {
+  margin: 0;
+  font-size: 15px;
+}
+
+.disconnect-retry {
+  padding: 11px 30px;
+}
+
+/* ---------- instance icon (รูปแทน instance — อัปโหลดเองได้, เก็บเป็น icon.<ext> ใน folder instance) ---------- */
+
+.instance-head-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  min-width: 0;
+}
+
+.instance-card-title {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.instance-icon-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.instance-icon-btn {
+  display: block;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.instance-icon {
+  display: block;
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  background: #000000;
+}
+
+.instance-detail-icon {
+  display: block;
+  width: 88px;
+  height: 88px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  background: #000000;
+}
+
+/* ปุ่มลบ icon — มุมขวาบนของรูป (โชว์เมื่อมี icon เท่านั้น) */
+.instance-icon-del {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--bg-1);
+  background: var(--danger);
+  color: #1a0e02;
+  cursor: pointer;
+}
+
+.instance-icon-del:hover {
+  filter: brightness(1.1);
+}
+
+.instance-icon-del[hidden] {
+  display: none;
+}
+
+.instance-icon-fallback {
+  display: grid;
+  place-items: center;
+  color: var(--accent-2);
+  font-weight: 700;
+  background: var(--bg-3);
+}
+
+.instance-icon-fallback.instance-icon {
+  font-size: 22px;
+}
+
+.instance-icon-fallback.instance-detail-icon {
+  font-size: 34px;
+}
+
+.instance-icon-btn:hover .instance-icon {
+  border-color: var(--accent);
 }
 
 /* Instance management */
@@ -737,6 +956,40 @@ input[type="file"]:focus {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* แถบแท็บใต้หัวหน้า instance (Modrinth-style underline tabs) */
+.tab-bar {
+  display: flex;
+  gap: 2px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.tab {
+  margin-bottom: -1px;
+  padding: 9px 14px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.is-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 
 /* เว้นระยะระหว่างการ์ดระดับบนของหน้า — ต้องเป็น direct child เท่านั้น
@@ -943,24 +1196,56 @@ input[type="file"]:focus {
   margin-top: 20px;
 }
 
+.create-card {
+  max-width: 760px;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
 .import-error {
   color: var(--danger);
+  margin-top: 10px;
+}
+
+.import-pick {
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
 }
 
 .wizard-path {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 10px 0 16px;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 16px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11.5px;
 }
 
-.wizard-path .is-active {
+.wizard-path > span:not(.wizard-arrow) {
+  padding: 3px 9px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.wizard-path > span.is-active:not(.wizard-arrow) {
+  background: rgba(255, 138, 30, 0.14);
+  border-color: rgba(255, 138, 30, 0.65);
   color: var(--accent);
 }
 
-.wizard-path .is-done {
+.wizard-path > span.is-done:not(.wizard-arrow) {
+  border-color: rgba(255, 192, 97, 0.35);
   color: var(--accent-2);
 }
 .wizard-arrow {
@@ -1036,6 +1321,252 @@ input[type="file"]:focus {
 .mod-search-block h4 {
   margin: 0 0 10px;
   font-size: 14px;
+}
+
+.panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  margin-bottom: 8px;
+}
+
+.panel-toolbar .dropdown {
+  min-width: 180px;
+}
+
+.check-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -2px 0 10px;
+}
+
+.check-progress-track {
+  flex: 1;
+  min-width: 80px;
+  height: 6px;
+  border-radius: 0;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+
+.check-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 0;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.check-progress-label {
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.panel-toolbar .btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ปุ่ม CHOOSE FILE — neobrutalist hard shadow คงไว้ animation แค่เปลี่ยนสี (มินิมอล) */
+.choose-file-btn {
+  gap: 9px;
+  padding: 9px 18px;
+  background: var(--bg-3);
+  border: 2px solid var(--accent);
+  color: var(--accent-2);
+  box-shadow: 4px 4px 0 var(--accent-dim);
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.choose-file-btn:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a0e02;
+}
+
+.choose-file-btn:active:not(:disabled) {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: #1a0e02;
+}
+
+.choose-file-btn .choose-file-icon {
+  flex-shrink: 0;
+}
+
+.version-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.version-row-pick {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+}
+
+.version-row-pick:hover {
+  background: var(--bg-3);
+  border-color: var(--accent-2);
+}
+
+.version-row-pick .btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.version-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.version-row-name {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.version-row-meta {
+  color: var(--muted);
+  font-size: 11.5px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.version-row-size {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mod-flag {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.mod-flag[data-flag="update"] {
+  color: var(--accent);
+  border-color: rgba(255, 192, 97, 0.5);
+}
+
+.mod-flag[data-flag="unverified"] {
+  border-style: dashed;
+}
+
+/* Update check panel (แท็บ UPDATES) */
+
+.upd-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.upd-group-title {
+  margin: 16px 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.upd-group-title:first-child {
+  margin-top: 4px;
+}
+
+.upd-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 13px;
+}
+
+.upd-row:last-child {
+  border-bottom: none;
+}
+
+.upd-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upd-status {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.upd-status.s-ok {
+  color: #d4f5d8;
+  border-color: rgba(124, 222, 144, 0.4);
+  background: rgba(124, 222, 144, 0.1);
+}
+
+.upd-status.s-update {
+  color: #ffd9a8;
+  border-color: rgba(255, 192, 97, 0.45);
+  background: rgba(255, 192, 97, 0.12);
+}
+
+.upd-status.s-bad {
+  color: #ffd0cc;
+  border-color: rgba(255, 122, 110, 0.45);
+  background: rgba(255, 122, 110, 0.12);
+}
+
+.upd-skip {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.upd-removed {
+  margin-top: 16px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 4px;
+}
+
+.upd-removed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .mod-result-info {
@@ -1219,7 +1750,7 @@ input[type="file"]:focus {
 
 .progress-track {
   height: 10px;
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--bg-3);
   border: 1px solid var(--border-soft);
   overflow: hidden;
@@ -1242,62 +1773,17 @@ input[type="file"]:focus {
 
 /* ---------- Packs panel ---------- */
 
-.pack-section {
-  margin-top: 16px;
-}
-
-.pack-section:first-of-type {
-  margin-top: 6px;
-}
-
-.pack-section h4 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 0 8px;
-  font-size: 14px;
-}
-
-.pack-search {
-  flex-wrap: wrap;
-}
-
-.pack-search .pack-type-dropdown {
-  min-width: 168px;
-}
-
-.pack-search .pack-type-dropdown .dropdown-menu {
-  min-width: 220px;
-}
-
-.pack-search input[type="search"] {
-  flex: 1;
-  min-width: 180px;
+/* แถบสลับ INSTALLED / GET บนหัวแท็บ content */
+.kind-subnav {
+  margin: -4px 0 14px;
+  align-self: flex-start;
+  width: fit-content;
 }
 
 /* ---------- Java runtime card ---------- */
 
 #javaRtDropdown {
   margin-top: 12px;
-}
-
-/* LIVE FLOW — ตัวเลือกวิธี sign in (ลบพร้อม src/auth/live.js) */
-.auth-flow-picker {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.auth-flow-picker .flow-option {
-  flex: 1;
-  min-width: 0;
-}
-
-.flow-option.active {
-  border-color: var(--accent);
-  background: rgba(255, 138, 30, 0.14);
-  color: var(--accent-2);
-  font-weight: 600;
 }
 
 /* account pill ต้องซ่อนจริงเมื่อ sign out (.pill ตั้ง display: inline-flex ซึ่ง override [hidden] ของ browser) */
@@ -1312,7 +1798,7 @@ input[type="file"]:focus {
   height: auto;
   margin: 10px auto 0;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
-  border-radius: 8px;
+  border-radius: 0;
   background: rgba(255, 255, 255, 0.03);
   image-rendering: pixelated;
 }
@@ -1335,6 +1821,46 @@ input[type="file"]:focus {
 }
 .skin-overlay .import-error {
   margin-top: 10px;
+}
+
+/* ---------- Server (START tab): console + EULA banner ---------- */
+
+.server-console {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  height: 340px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.server-console:empty::before {
+  content: 'No output yet — press START to install and run the server.';
+  color: var(--muted);
+}
+
+.srv-eula {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin: 4px 0 8px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+}
+
+.srv-eula p {
+  margin: 0;
 }
 
 /* ---------- ซ่อน scrollbar ทั้งแอป (ยังเลื่อนได้ปกติ) ---------- */

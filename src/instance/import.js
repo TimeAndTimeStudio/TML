@@ -10,6 +10,7 @@ import { ensureDir, pathExists, removePath, resolveWithin } from '../core/filesy
 import { extractZip, listZipEntries, readZipEntry } from '../archive/unzip.js';
 import { validateZipEntryName } from '../archive/zip.js';
 import { EXPORT_INSTANCE_FILE, validateExportManifest } from './export.js';
+import { isIconFilename } from './icon.js';
 import { validateInstanceId, validateInstanceName } from './validate.js';
 
 export const IMPORT_MANIFEST_FILE = EXPORT_INSTANCE_FILE;
@@ -49,7 +50,7 @@ export function createInstanceImporter(options = {}) {
     throw invalid('createInstanceImporter requires an instance manager with create() and paths()', 'INVALID_INSTANCE_MANAGER');
   }
 
-  async function inspect(zipFile) {
+  async function inspect(zipFile, inspectOptions = {}) {
     if (typeof zipFile !== 'string' || zipFile === '') {
       throw importZipError(String(zipFile), null);
     }
@@ -63,6 +64,7 @@ export function createInstanceImporter(options = {}) {
 
     const seen = new Set();
     let manifestEntry = null;
+    let iconCount = 0;
     for (const entry of entries) {
       const name = entry.normalized ?? entry.name;
       validateZipEntryName(entry.name, { dir: entry.isDirectory });
@@ -76,6 +78,16 @@ export function createInstanceImporter(options = {}) {
           throw invalid('Manifest entry must be a file', 'IMPORT_NO_MANIFEST', { entry: name });
         }
         manifestEntry = entry;
+        continue;
+      }
+      if (isIconFilename(name)) {
+        if (entry.isDirectory) {
+          throw invalid('Icon entry must be a file', 'IMPORT_UNKNOWN_ENTRY', { entry: name });
+        }
+        iconCount += 1;
+        if (iconCount > 1) {
+          throw invalid('Archive contains more than one icon file', 'ZIP_DUPLICATE_ENTRY', { entry: name });
+        }
         continue;
       }
       if (name !== IMPORT_GAME_ROOT && !name.startsWith(IMPORT_GAME_ROOT)) {
@@ -101,14 +113,30 @@ export function createInstanceImporter(options = {}) {
       throw invalid(`${IMPORT_MANIFEST_FILE} is not valid JSON`, 'IMPORT_NO_MANIFEST', { file: zipFile, reason: err?.message ?? null });
     }
 
-    return { entries, manifest: validateExportManifest(raw) };
+    const manifest = validateExportManifest(raw);
+    const expectedType = inspectOptions.expectedType ?? null;
+    // ปฏิเสธตั้งแต่ preview — ไม่ใช่รอให้ confirm แล้วค่อยงงว่า archive ผิดชนิด
+    assertExpectedType(manifest, expectedType, zipFile);
+    return { entries, manifest, expectedType };
+  }
+
+  // กันสลับชนิด — archive client ห้ามเข้าทาง import server และในทางกลับกัน
+  function assertExpectedType(manifest, expectedType, zipFile) {
+    if (expectedType === null || expectedType === undefined || manifest.type === expectedType) return;
+    const wanted = expectedType === 'server' ? 'server' : 'instance';
+    const got = manifest.type === 'server' ? 'a server' : 'an instance';
+    throw invalid(
+      `This archive contains ${got}, not a ${wanted} — use the matching import button`,
+      'IMPORT_TYPE_MISMATCH',
+      { file: zipFile, expected: expectedType, actual: manifest.type }
+    );
   }
 
   async function importInstance(zipFile, importOptions = {}) {
     if (importOptions.id !== undefined) validateInstanceId(importOptions.id);
     if (importOptions.name !== undefined) validateInstanceName(importOptions.name);
 
-    const { entries, manifest } = await inspect(zipFile);
+    const { entries, manifest } = await inspect(zipFile, { expectedType: importOptions.expectedType ?? null });
     const signal = importOptions.signal ?? null;
     if (signal?.aborted) throw new CancelledError('Import cancelled', { details: { file: zipFile } });
 
@@ -141,6 +169,7 @@ export function createInstanceImporter(options = {}) {
         minecraftVersion: manifest.minecraftVersion,
         loader: manifest.loader,
         fabricLoaderVersion: manifest.fabricLoaderVersion,
+        type: manifest.type,
       });
       created = true;
       paths = manager.paths(meta.id);
@@ -150,6 +179,15 @@ export function createInstanceImporter(options = {}) {
         for (const child of await fsp.readdir(stagedGame, { withFileTypes: true })) {
           await movePath(path.join(stagedGame, child.name), path.join(paths.gameDir, child.name));
         }
+      }
+
+      // ไอคอน custom (icon.<ext> ชั้นบนสุดของ zip) → ย้ายเข้า instance dir ใหม่
+      const iconName = entries
+        .filter((entry) => !entry.isDirectory)
+        .map((entry) => entry.normalized ?? entry.name)
+        .find(isIconFilename);
+      if (iconName !== undefined) {
+        await movePath(path.join(tempDir, iconName), path.join(paths.dir, iconName));
       }
 
       const content = extracted.filter((entry) => entry.name !== IMPORT_MANIFEST_FILE);

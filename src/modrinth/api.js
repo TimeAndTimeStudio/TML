@@ -413,6 +413,51 @@ export function createModrinthApi(options = {}) {
     return normalizeVersion(res.data);
   }
 
+  // POST /v2/version_files — lookup versions by file hash (ใช้ตรวจ .jar ที่วางใน mods/ เองว่าตรงกับ Modrinth ไหม)
+  // คืน object { [hash lowercase]: normalized version } — ไม่มี hash ไหนตรงเลย (404) → {}
+  async function getVersionFiles(hashes, options = {}) {
+    const algorithm = options.algorithm ?? 'sha1';
+    if (algorithm !== 'sha1' && algorithm !== 'sha512') {
+      throw new ValidationError(`Unsupported hash algorithm: ${JSON.stringify(algorithm)}`, {
+        code: 'INVALID_HASH_ALGORITHM',
+        details: { field: 'algorithm', known: ['sha1', 'sha512'] },
+      });
+    }
+    if (!Array.isArray(hashes) || hashes.length === 0) {
+      throw new ValidationError('hashes must be a non-empty array of hex strings', {
+        code: 'INVALID_FILE_HASHES',
+        details: { hashes: typeof hashes === 'string' ? 'string' : typeof hashes },
+      });
+    }
+    const pattern = algorithm === 'sha1' ? SHA1_RE : SHA512_RE;
+    const normalized = [];
+    for (const [index, hash] of hashes.entries()) {
+      if (typeof hash !== 'string' || !pattern.test(hash)) {
+        throw new ValidationError(`Invalid ${algorithm} hash at index ${index}`, {
+          code: 'INVALID_FILE_HASHES',
+          details: { index, hash: typeof hash === 'string' ? hash.slice(0, 8) : typeof hash },
+        });
+      }
+      normalized.push(hash.toLowerCase());
+    }
+
+    const res = await client.postJson(
+      `${MODRINTH_API_BASE_URL}/version_files`,
+      { hashes: [...new Set(normalized)], algorithm },
+      { source: 'modrinth', validator, allowStatus: [404] },
+    );
+    if (res.status === 404) return Object.freeze({});
+    const data = res.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw responseInvalid('version_files', 'Modrinth version_files response is not an object');
+    }
+    const out = {};
+    for (const [hash, entry] of Object.entries(data)) {
+      out[hash.toLowerCase()] = normalizeVersion(entry, 'version_files');
+    }
+    return Object.freeze(out);
+  }
+
   async function listGameVersionTags() {
     const { data } = await getJson(MODRINTH_TAG_GAME_VERSIONS_URL);
     if (!Array.isArray(data)) {
@@ -456,6 +501,7 @@ export function createModrinthApi(options = {}) {
     getProject,
     listVersions,
     getVersion,
+    getVersionFiles,
     listGameVersionTags,
     listLoaderTags,
   };

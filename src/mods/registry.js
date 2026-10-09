@@ -18,6 +18,22 @@ export function modRegistryPath(instanceDir) {
   return path.join(instanceDir, MOD_REGISTRY_FILE);
 }
 
+// serialize อ่าน-แก้-เขียน registry ต่อ instance — โหลดหลายไฟล์พร้อมกันไม่ทำให้ entry หาย (lost update)
+const registryLocks = new Map();
+
+function withRegistryLock(instanceDir, task) {
+  const previous = registryLocks.get(instanceDir) ?? Promise.resolve();
+  const run = previous.then(task, task);
+  registryLocks.set(
+    instanceDir,
+    run.then(
+      () => {},
+      () => {}
+    )
+  );
+  return run;
+}
+
 export async function readModRegistry(instanceDir) {
   const file = modRegistryPath(instanceDir);
   if (!(await pathExists(file))) return Object.freeze({});
@@ -30,7 +46,7 @@ export async function readModRegistry(instanceDir) {
   return raw;
 }
 
-export async function recordInstalledMods(instanceDir, version, files) {
+export async function recordInstalledMods(instanceDir, version, files, { kind = 'mods' } = {}) {
   if (!version || typeof version !== 'object') {
     throw new ValidationError('version must be a Modrinth version object', {
       code: 'INVALID_MOD_VERSION',
@@ -38,36 +54,42 @@ export async function recordInstalledMods(instanceDir, version, files) {
     });
   }
   const file = modRegistryPath(instanceDir);
-  const current = (await readModRegistry(instanceDir).catch(() => ({}))) ?? {};
-  const next = { ...current };
-  for (const result of files) {
-    if (typeof result?.filename !== 'string' || result.filename === '') continue;
-    next[result.filename] = Object.freeze({
-      projectId: version.projectId ?? null,
-      versionId: version.id ?? null,
-      versionNumber: version.versionNumber ?? null,
-      url: typeof result.url === 'string' ? result.url : null,
-      sha1: result.sha1 ?? null,
-      sha512: result.sha512 ?? null,
-      size: typeof result.size === 'number' ? result.size : result.bytes ?? null,
-    });
-  }
-  await writeJson(file, next);
-  return next;
+  return withRegistryLock(instanceDir, async () => {
+    const current = (await readModRegistry(instanceDir).catch(() => ({}))) ?? {};
+    const next = { ...current };
+    for (const result of files) {
+      if (typeof result?.filename !== 'string' || result.filename === '') continue;
+      next[result.filename] = Object.freeze({
+        projectId: version.projectId ?? null,
+        versionId: version.id ?? null,
+        versionNumber: version.versionNumber ?? null,
+        url: typeof result.url === 'string' ? result.url : null,
+        sha1: result.sha1 ?? null,
+        sha512: result.sha512 ?? null,
+        size: typeof result.size === 'number' ? result.size : result.bytes ?? null,
+        // entry เก่า (ก่อนมี field นี้) คือ mods — คนอ่านใช้ kind ?? 'mods'
+        kind,
+      });
+    }
+    await writeJson(file, next);
+    return next;
+  });
 }
 
 export async function forgetInstalledMod(instanceDir, filename) {
   const file = modRegistryPath(instanceDir);
   if (!(await pathExists(file))) return null;
-  let current;
-  try {
-    current = await readJson(file);
-  } catch {
-    return null;
-  }
-  if (!current || typeof current !== 'object' || Array.isArray(current)) return null;
-  if (!Object.hasOwn(current, filename)) return null;
-  delete current[filename];
-  await writeJson(file, current);
-  return current;
+  return withRegistryLock(instanceDir, async () => {
+    let current;
+    try {
+      current = await readJson(file);
+    } catch {
+      return null;
+    }
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return null;
+    if (!Object.hasOwn(current, filename)) return null;
+    delete current[filename];
+    await writeJson(file, current);
+    return current;
+  });
 }

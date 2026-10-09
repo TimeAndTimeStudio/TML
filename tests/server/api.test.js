@@ -95,6 +95,7 @@ let config;
 let manager;
 let exportsDir;
 let upstream;
+let listVersionCalls;
 
 function request(pathname, { method = 'GET', body = null, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
@@ -172,6 +173,7 @@ before(async () => {
   config = loadConfig({ env: { TML_DATA_DIR: dataDir, TML_PORT: '0', TML_LOG_LEVEL: 'silent' } });
   const logger = createLogger({ level: 'silent' });
   exportsDir = config.paths.exportsDir;
+  listVersionCalls = [];
 
   manager = createInstanceManager({ config, launcher: createFakeLauncher(), fabric: createFakeFabric(), logger });
   const exporter = createInstanceExporter({ manager, writeZip: writeZipFile, exportsDir, logger });
@@ -214,6 +216,19 @@ before(async () => {
         ],
         dependencies: [],
       };
+    },
+    async listVersions(projectId, options) {
+      listVersionCalls.push({ projectId, options });
+      // หน่วงสั้น ๆ ให้ check ยังทำงานอยู่จริงตอน test ยิงหลาย kind พร้อมกัน
+      // (ถ้าเร็วเกินไป ผลจะบังเอิญผ่านได้ทั้ง code เก่าและใหม่ → ไม่จับ regression)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      if (projectId !== 'apiproj') {
+        const err = new Error('project not found');
+        err.code = 'NOT_FOUND';
+        throw err;
+      }
+      const version = await modrinth.getVersion('apimod-1');
+      return [version];
     },
   };
   const installer = createModInstaller({ manager, modrinth, validator: localOnly, logger });
@@ -374,11 +389,11 @@ test('import API validates an upload first and then creates a new instance', asy
   assert.equal(preview.json.preview, true);
   assert.match(preview.json.token, /^[a-f0-9]{32}$/);
   assert.deepEqual(preview.json.manifest, {
-    format: 1,
     name: 'Imported Api',
     minecraftVersion: '1.20.1',
     loader: 'fabric',
     fabricLoaderVersion: '0.15.7',
+    type: 'client',
   });
 
   const badToken = await request('/api/instances/import', { method: 'POST', body: { token: 'zzz' } });
@@ -465,6 +480,43 @@ test('mods API lists, installs and removes mods for one instance', async () => {
   assert.equal(unknownInstance.status, 404);
 });
 
+test('mods API installs a versionIds batch and reports each version independently', async () => {
+  await request('/api/instances', { method: 'POST', body: { name: 'Batchy', id: 'batchy1', ...BASE } });
+
+  const empty = await request('/api/instances/batchy1/mods', { method: 'POST', body: { versionIds: [] } });
+  assert.equal(empty.status, 400);
+  assert.equal(empty.json.error.details.field, 'versionIds');
+
+  const badItem = await request('/api/instances/batchy1/mods', { method: 'POST', body: { versionIds: ['apimod-1', 42] } });
+  assert.equal(badItem.status, 400);
+  assert.equal(badItem.json.error.details.field, 'versionIds');
+
+  // มีทั้งตัวที่เจอและไม่เจอ → ok true/false ต่อรายการ ไม่ fail ทั้งชุด
+  const batch = await request('/api/instances/batchy1/mods', {
+    method: 'POST',
+    body: { versionIds: ['apimod-1', 'missing-1'] },
+  });
+  assert.equal(batch.status, 201, batch.text);
+  assert.equal(batch.json.count, 2);
+  const byId = new Map(batch.json.results.map((entry) => [entry.versionId, entry]));
+  assert.equal(byId.get('apimod-1').ok, true);
+  assert.equal(byId.get('apimod-1').files[0].filename, 'apimod.jar');
+  assert.equal(byId.get('missing-1').ok, false);
+  assert.ok(byId.get('missing-1').error, 'failure carries an error message');
+
+  const list = await request('/api/instances/batchy1/mods');
+  assert.equal(list.json.count, 1, 'only the resolvable version installed');
+
+  // packs batch เดินเส้นทางเดียวกัน
+  const packs = await request('/api/instances/batchy1/packs', {
+    method: 'POST',
+    body: { versionIds: ['apimod-1'], kind: 'shaderpacks' },
+  });
+  assert.equal(packs.status, 201, packs.text);
+  assert.equal(packs.json.kind, 'shaderpacks');
+  assert.equal(packs.json.results[0].ok, true);
+});
+
 test('packs API installs, lists and removes resource packs and shaders per kind', async () => {
   await request('/api/instances', { method: 'POST', body: { name: 'Packy', id: 'packy1', ...BASE } });
 
@@ -535,6 +587,364 @@ test('packs API installs, lists and removes resource packs and shaders per kind'
   assert.equal(badKind.json.error.code, 'INVALID_PACK_KIND');
 });
 
+test('removed files API trashes, lists and restores instance files for later recovery', async () => {
+  await request('/api/instances', { method: 'POST', body: { name: 'Trashable', id: 'trashme1', ...BASE } });
+  await request('/api/instances/trashme1/mods', { method: 'POST', body: { versionId: 'apimod-1' } });
+
+  const modsDir = manager.paths('trashme1').modsDir;
+  assert.equal(fs.existsSync(path.join(modsDir, 'apimod.jar')), true);
+
+  const trashed = await request('/api/instances/trashme1/removed', {
+    method: 'POST',
+    body: { kind: 'mods', filename: 'apimod.jar', reason: 'incompatible', targetVersion: '1.21' },
+  });
+  assert.equal(trashed.status, 201, trashed.text);
+  assert.equal(trashed.json.removed, true);
+  assert.equal(trashed.json.remembered, true);
+  assert.equal(fs.existsSync(path.join(modsDir, 'apimod.jar')), false);
+  const bucket = path.join(manager.paths('trashme1').dir, '.removed', 'mods');
+  assert.equal(fs.existsSync(path.join(bucket, 'apimod.jar')), true);
+
+  const modsAfter = await request('/api/instances/trashme1/mods');
+  assert.equal(modsAfter.json.count, 0);
+
+  const list = await request('/api/instances/trashme1/removed');
+  assert.equal(list.status, 200);
+  assert.equal(list.json.count, 1);
+  assert.deepEqual(
+    {
+      kind: list.json.removed[0].kind,
+      filename: list.json.removed[0].filename,
+      reason: list.json.removed[0].reason,
+      targetVersion: list.json.removed[0].targetVersion,
+    },
+    { kind: 'mods', filename: 'apimod.jar', reason: 'incompatible', targetVersion: '1.21' },
+  );
+  assert.equal(typeof list.json.removed[0].size, 'number');
+  assert.equal(typeof list.json.removed[0].removedAt, 'string');
+
+  const trashedAgain = await request('/api/instances/trashme1/removed', {
+    method: 'POST',
+    body: { kind: 'mods', filename: 'apimod.jar' },
+  });
+  assert.equal(trashedAgain.status, 404);
+  assert.equal(trashedAgain.json.error.code, 'MOD_NOT_FOUND');
+
+  const traversal = await request('/api/instances/trashme1/removed', {
+    method: 'POST',
+    body: { kind: 'mods', filename: '../escape.jar' },
+  });
+  assert.equal(traversal.status, 400);
+  assert.equal(traversal.json.error.code, 'INVALID_MOD_FILENAME');
+
+  const badKind = await request('/api/instances/trashme1/removed', {
+    method: 'POST',
+    body: { kind: 'cheese', filename: 'x.jar' },
+  });
+  assert.equal(badKind.status, 400);
+  assert.equal(badKind.json.error.code, 'INVALID_PACK_KIND');
+
+  const restored = await request('/api/instances/trashme1/removed/restore', {
+    method: 'POST',
+    body: { kind: 'mods', filename: 'apimod.jar' },
+  });
+  assert.equal(restored.status, 200, restored.text);
+  assert.equal(restored.json.restored, true);
+  assert.equal(fs.existsSync(path.join(modsDir, 'apimod.jar')), true);
+  const listAfter = await request('/api/instances/trashme1/removed');
+  assert.equal(listAfter.json.count, 0);
+
+  const restoreMissing = await request('/api/instances/trashme1/removed/restore', {
+    method: 'POST',
+    body: { kind: 'mods', filename: 'apimod.jar' },
+  });
+  assert.equal(restoreMissing.status, 404);
+  assert.equal(restoreMissing.json.error.code, 'REMOVED_FILE_NOT_FOUND');
+
+  // สร้างสถานะซ้ำ: มีไฟล์ชื่อเดียวกันทั้งใน mods/ และ .removed/ → restore ต้องชน (409) ไม่ทับเงียบ ๆ
+  await request('/api/instances/trashme1/removed', { method: 'POST', body: { kind: 'mods', filename: 'apimod.jar' } });
+  await request('/api/instances/trashme1/mods', { method: 'POST', body: { versionId: 'apimod-1' } });
+  const conflict = await request('/api/instances/trashme1/removed/restore', {
+    method: 'POST',
+    body: { kind: 'mods', filename: 'apimod.jar' },
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.json.error.code, 'RESTORE_CONFLICT');
+});
+
+test('changing the Minecraft version remembers the previous one for the revert control', async () => {
+  await request('/api/instances', { method: 'POST', body: { name: 'Revertible', id: 'revertme1', ...BASE } });
+  const before = await request('/api/instances/revertme1');
+  assert.equal(before.status, 200, before.text);
+  assert.equal(before.json.instance.previousMinecraftVersion, null);
+
+  const first = await request('/api/instances/revertme1', {
+    method: 'PATCH',
+    body: { minecraftVersion: '1.20.2' },
+  });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.json.instance.minecraftVersion, '1.20.2');
+  assert.equal(first.json.instance.previousMinecraftVersion, '1.20.1');
+
+  // patch ด้วยเวอร์ชั่นเดิม → previous ห้ามถูกเขียนทับ
+  const same = await request('/api/instances/revertme1', {
+    method: 'PATCH',
+    body: { minecraftVersion: '1.20.2' },
+  });
+  assert.equal(same.status, 200, same.text);
+  assert.equal(same.json.instance.previousMinecraftVersion, '1.20.1');
+
+  // patch อย่างอื่น (name) → previous ห้ามถูกแตะ
+  const renamed = await request('/api/instances/revertme1', {
+    method: 'PATCH',
+    body: { name: 'Revertible Two' },
+  });
+  assert.equal(renamed.status, 200, renamed.text);
+  assert.equal(renamed.json.instance.previousMinecraftVersion, '1.20.1');
+
+  const second = await request('/api/instances/revertme1', {
+    method: 'PATCH',
+    body: { minecraftVersion: '1.20.3' },
+  });
+  assert.equal(second.status, 200, second.text);
+  assert.equal(second.json.instance.minecraftVersion, '1.20.3');
+  assert.equal(second.json.instance.previousMinecraftVersion, '1.20.2'); // จำล่าสุดที่เคยใช้ไว้เสมอ
+});
+
+test('removed list reports which files the target Minecraft version supports for auto-restore', async () => {
+  await request('/api/instances', { method: 'POST', body: { name: 'Supporty', id: 'supporty1', ...BASE } });
+  await request('/api/instances/supporty1/mods', { method: 'POST', body: { versionId: 'apimod-1' } });
+  await request('/api/instances/supporty1/removed', {
+    method: 'POST',
+    body: { kind: 'mods', filename: 'apimod.jar', reason: 'incompatible', targetVersion: '1.21' },
+  });
+  // ไฟล์ที่วางเองโดยไม่ผ่าน API → ไม่มีใน registry → ไม่รู้ว่ารองรับไหม
+  const modsDir = manager.paths('supporty1').modsDir;
+  fs.writeFileSync(path.join(modsDir, 'mystery.jar'), 'mystery');
+  await request('/api/instances/supporty1/removed', {
+    method: 'POST',
+    body: { kind: 'mods', filename: 'mystery.jar', reason: 'manual' },
+  });
+
+  const plain = await request('/api/instances/supporty1/removed');
+  assert.equal(plain.status, 200);
+  assert.equal(plain.json.count, 2);
+  for (const entry of plain.json.removed) {
+    assert.equal(Object.hasOwn(entry, 'supported'), false, 'supported ตอบเฉพาะตอนระบุ minecraftVersion');
+  }
+
+  const supported = await request('/api/instances/supporty1/removed?minecraftVersion=1.20.1');
+  assert.equal(supported.status, 200, supported.text);
+  const byName = Object.fromEntries(supported.json.removed.map((entry) => [entry.filename, entry]));
+  assert.equal(byName['apimod.jar'].supported, true, 'เวอร์ชี Modrinth ของ apimod.jar รองรับ 1.20.1');
+  assert.equal(byName['mystery.jar'].supported, false, 'ไม่มีใน registry → ไม่ auto-restore');
+
+  const unsupported = await request('/api/instances/supporty1/removed?minecraftVersion=1.19.2');
+  assert.equal(unsupported.status, 200, unsupported.text);
+  const byName2 = Object.fromEntries(unsupported.json.removed.map((entry) => [entry.filename, entry]));
+  assert.equal(byName2['apimod.jar'].supported, false);
+  assert.equal(byName2['mystery.jar'].supported, false);
+});
+
+test('trashing and restoring files in parallel keeps every removed-index entry', async () => {
+  await request('/api/instances', { method: 'POST', body: { name: 'Bursty', id: 'bursty1', ...BASE } });
+  const modsDir = manager.paths('bursty1').modsDir;
+  fs.mkdirSync(modsDir, { recursive: true });
+  const filenames = ['burst-a.jar', 'burst-b.jar', 'burst-c.jar'];
+  for (const filename of filenames) fs.writeFileSync(path.join(modsDir, filename), filename);
+
+  const trashed = await Promise.all(
+    filenames.map((filename) =>
+      request('/api/instances/bursty1/removed', {
+        method: 'POST',
+        body: { kind: 'mods', filename, reason: 'incompatible', targetVersion: '1.21' },
+      }),
+    ),
+  );
+  for (const res of trashed) assert.equal(res.status, 201, res.text);
+
+  const list = await request('/api/instances/bursty1/removed');
+  assert.equal(list.json.count, 3, 'รายการที่ลบพร้อมกันต้องครบสามไฟล์');
+  assert.deepEqual(list.json.removed.map((entry) => entry.filename).sort(), [...filenames].sort());
+
+  const restored = await Promise.all(
+    filenames.map((filename) =>
+      request('/api/instances/bursty1/removed/restore', {
+        method: 'POST',
+        body: { kind: 'mods', filename },
+      }),
+    ),
+  );
+  for (const res of restored) assert.equal(res.status, 200, res.text);
+  for (const filename of filenames) {
+    assert.equal(fs.existsSync(path.join(modsDir, filename)), true, `${filename} ต้องกลับเข้า mods/`);
+  }
+  const after = await request('/api/instances/bursty1/removed');
+  assert.equal(after.json.count, 0);
+});
+
+test('checks for different kinds run at the same time instead of queueing behind one instance lock', async () => {
+  await request('/api/instances', { method: 'POST', body: { name: 'Parallel', id: 'parakeck1', ...BASE } });
+  await request('/api/instances/parakeck1/mods', { method: 'POST', body: { versionId: 'apimod-1' } });
+  // ใส่ไฟล์ resource pack + registry entry ด้วย → ทั้งสอง kind ต้องเรียก listVersions (delay ใน fake) จริงทั้งคู่
+  const gameDir = manager.paths('parakeck1').gameDir;
+  const rpDir = path.join(gameDir, 'resourcepacks');
+  fs.mkdirSync(rpDir, { recursive: true });
+  fs.writeFileSync(path.join(rpDir, 'probe-rp.zip'), 'pack');
+  fs.writeFileSync(
+    path.join(manager.paths('parakeck1').dir, 'mod-registry.json'),
+    JSON.stringify({
+      'probe-rp.zip': { projectId: 'apiproj', versionId: 'apimod-1', versionNumber: '1.2.3', kind: 'resourcepacks' },
+    }),
+  );
+
+  const [mods, packs] = await Promise.all([
+    request('/api/instances/parakeck1/check', { method: 'POST', body: { kind: 'mods' } }),
+    request('/api/instances/parakeck1/check', { method: 'POST', body: { kind: 'resourcepacks' } }),
+  ]);
+  // code เดิมกันทั้ง instance (409 CHECK_ALREADY_RUNNING) → kind ที่สองต้องพลาด แต่ตอนนี้ต้อง 200 ทั้งคู่
+  assert.equal(mods.status, 200, mods.text);
+  assert.equal(packs.status, 200, packs.text);
+  assert.equal(mods.json.checked, 1);
+  assert.equal(packs.json.checked, 1);
+
+  const progress = await request('/api/instances/parakeck1/check-progress');
+  assert.equal(progress.status, 200);
+  assert.equal(progress.json.instanceId, 'parakeck1');
+  assert.equal(progress.json.running, false, 'progress settled once both checks answered');
+  assert.equal(progress.json.phase, 'done');
+  assert.equal(typeof progress.json.finishedAt, 'number');
+});
+
+test('check API verifies instance files against Modrinth and reports update state', async () => {
+  const idle = await request('/api/instances/checky1/check-progress');
+  assert.equal(idle.status, 200, 'progress route answers even before any check');
+  assert.equal(idle.json.phase, 'idle');
+  assert.equal(idle.json.running, false);
+
+  await request('/api/instances', { method: 'POST', body: { name: 'Checky', id: 'checky1', ...BASE } });
+
+  const missing = await request('/api/instances/nope/check', { method: 'POST', body: {} });
+  assert.equal(missing.status, 404);
+
+  const badKind = await request('/api/instances/checky1/check', { method: 'POST', body: { kind: 'cheats' } });
+  assert.equal(badKind.status, 400);
+  assert.equal(badKind.json.error.code, 'INVALID_PACK_KIND');
+
+  const empty = await request('/api/instances/checky1/check', { method: 'POST', body: { kind: 'resourcepacks' } });
+  assert.equal(empty.status, 200);
+  assert.equal(empty.json.kind, 'resourcepacks');
+  assert.equal(empty.json.checked, 0);
+  assert.deepEqual(empty.json.files, []);
+
+  const installed = await request('/api/instances/checky1/mods', {
+    method: 'POST',
+    body: { versionId: 'apimod-1' },
+  });
+  assert.equal(installed.status, 201, installed.text);
+
+  listVersionCalls.length = 0;
+  const checked = await request('/api/instances/checky1/check', { method: 'POST', body: { kind: 'mods' } });
+  assert.equal(checked.status, 200, checked.text);
+  assert.equal(checked.json.instanceId, 'checky1');
+  assert.equal(checked.json.kind, 'mods');
+  assert.equal(checked.json.checked, 1);
+  assert.deepEqual(checked.json.adopted, [], 'registry-tracked files skip hash adoption');
+  assert.equal(checked.json.updateCount, 0, 'the installed version is the latest known one');
+  const entry = checked.json.files[0];
+  assert.equal(entry.filename, 'apimod.jar');
+  assert.equal(entry.status, 'checked');
+  assert.equal(entry.projectId, 'apiproj');
+  assert.equal(entry.versionId, 'apimod-1');
+  assert.equal(entry.updateAvailable, false);
+  assert.deepEqual(entry.latest, { versionId: 'apimod-1', versionNumber: '1.2.3' });
+  assert.deepEqual(listVersionCalls[0], {
+    projectId: 'apiproj',
+    options: { gameVersions: ['1.20.1'], loaders: ['fabric'] },
+  });
+
+  const progress = await request('/api/instances/checky1/check-progress');
+  assert.equal(progress.status, 200);
+  assert.equal(progress.json.instanceId, 'checky1');
+  assert.equal(progress.json.running, false, 'progress is settled once the POST answered');
+  assert.equal(progress.json.phase, 'done');
+  assert.equal(typeof progress.json.startedAt, 'number');
+  assert.equal(typeof progress.json.finishedAt, 'number');
+});
+
+test('import API accepts an absolute .zip path behind the same preview flow', async () => {
+  const zip = manifestZip('Path Import');
+  const zipPath = path.join(dataDir, 'path-import.zip');
+  fs.writeFileSync(zipPath, zip);
+  const dirZip = path.join(dataDir, 'fake-dir.zip');
+  fs.mkdirSync(dirZip, { recursive: true });
+
+  try {
+    const noPreview = await request('/api/instances/import', { method: 'POST', body: { path: zipPath } });
+    assert.equal(noPreview.status, 400);
+    assert.equal(noPreview.json.error.code, 'IMPORT_PREVIEW_REQUIRED');
+
+    const relative = await request('/api/instances/import?preview=1', {
+      method: 'POST',
+      body: { path: 'relative/export.zip' },
+    });
+    assert.equal(relative.status, 400);
+    assert.equal(relative.json.error.code, 'IMPORT_PATH_NOT_ABSOLUTE');
+
+    const notZip = await request('/api/instances/import?preview=1', {
+      method: 'POST',
+      body: { path: path.join(dataDir, 'notes.txt') },
+    });
+    assert.equal(notZip.status, 400);
+    assert.equal(notZip.json.error.code, 'IMPORT_PATH_NOT_ZIP');
+
+    const missing = await request('/api/instances/import?preview=1', {
+      method: 'POST',
+      body: { path: path.join(dataDir, 'ghost.zip') },
+    });
+    assert.equal(missing.status, 404);
+    assert.equal(missing.json.error.code, 'IMPORT_PATH_NOT_FOUND');
+
+    const notAFile = await request('/api/instances/import?preview=1', {
+      method: 'POST',
+      body: { path: dirZip },
+    });
+    assert.equal(notAFile.status, 400);
+    assert.equal(notAFile.json.error.code, 'IMPORT_PATH_NOT_A_FILE');
+
+    const preview = await request('/api/instances/import?preview=1', {
+      method: 'POST',
+      body: { path: zipPath },
+    });
+    assert.equal(preview.status, 200, preview.text);
+    assert.equal(preview.json.preview, true);
+    assert.match(preview.json.token, /^[a-f0-9]{32}$/);
+    assert.equal(preview.json.manifest.name, 'Path Import');
+    assert.deepEqual(preview.json.manifest, {
+      name: 'Path Import',
+      minecraftVersion: '1.20.1',
+      loader: 'fabric',
+      fabricLoaderVersion: '0.15.7',
+      type: 'client',
+    });
+
+    const staging = path.join(config.paths.tmpDir, 'import-staging');
+    assert.equal(fs.existsSync(path.join(staging, `${preview.json.token}.zip`)), true, 'the path archive is staged as a copy');
+
+    const confirmed = await request('/api/instances/import', {
+      method: 'POST',
+      body: { token: preview.json.token, name: 'Path Confirmed' },
+    });
+    assert.equal(confirmed.status, 201, confirmed.text);
+    assert.equal(confirmed.json.name, 'Path Confirmed');
+    assert.equal(confirmed.json.manifest.name, 'Path Import');
+    assert.equal(fs.existsSync(path.join(staging, `${preview.json.token}.zip`)), false, 'confirm consumes the staged copy');
+  } finally {
+    fs.rmSync(zipPath, { force: true });
+    fs.rmSync(dirZip, { recursive: true, force: true });
+  }
+});
+
 test('launch progress route reports idle state and validates the instance id', async () => {
   const idle = await request('/api/instances/runner1/launch-progress');
   assert.equal(idle.status, 200);
@@ -570,6 +980,8 @@ test('instance routes appear in the route listing', async () => {
     'GET /api/instances/:id/packs',
     'POST /api/instances/:id/packs',
     'DELETE /api/instances/:id/packs/:fileId',
+    'POST /api/instances/:id/check',
+    'GET /api/instances/:id/check-progress',
     'GET /api/instances/:id/launch-progress',
   ]) {
     assert.ok(routes.includes(expected), `${expected} must be listed`);

@@ -150,19 +150,16 @@ function captureOutput(child, output, onOutput) {
   }
 }
 
-// สร้าง env ของกระบวนการเกม: 'x11' บังคับ SDL/GLFW ให้ใช้ XWayland — แล้ว GNOME/mutter จะวาด title bar + ปุ่ม +
-// ไอคอนหน้าต่างตามธีมระบบให้เอง (mutter ไม่รองรับ xdg-decoration → ไม่เคยวาด decoration ให้ client Wayland)
-// ลบ WAYLAND_DISPLAY อย่างเดียวไม่พอ: libwayland ต่อ default socket "wayland-0" เองเมื่อ env หายไป (พิสูจน์แล้ว:
-// เกมยังได้ video driver = wayland) — ต้องบังคับ SDL ไม่ให้ probe wayland ด้วย SDL_VIDEO_DRIVER (ตัว override
-// ที่ SDL ระบุใน message ของมันเอง) + ค่า SDL_VIDEODRIVER (ชื่อ legacy) + XDG_SESSION_TYPE ให้ตรงกับความจริง
+// สร้าง env ของกระบวนการเกม: 'wayland' = บังคับ Wayland native เท่านั้น — ตัดทาง X11/XWayland
+// ทิ้ง (ลบ DISPLAY) + บังคับ SDL ไม่ให้ probe กลับไป x11 ด้วย SDL_VIDEO_DRIVER (ตัว override ที่ SDL
+// ระบุใน message ของมันเอง) + ค่า SDL_VIDEODRIVER (ชื่อ legacy) + XDG_SESSION_TYPE ให้ตรงกับความจริง
 export function buildProcessEnv(platform, baseEnv = process.env, overrides = {}) {
   const env = { ...baseEnv, ...overrides };
-  if (platform === 'x11') {
-    delete env.WAYLAND_DISPLAY;
-    delete env.WAYLAND_SOCKET;
-    env.XDG_SESSION_TYPE = 'x11';
-    env.SDL_VIDEO_DRIVER = 'x11';
-    env.SDL_VIDEODRIVER = 'x11';
+  if (platform === 'wayland') {
+    delete env.DISPLAY;
+    env.XDG_SESSION_TYPE = 'wayland';
+    env.SDL_VIDEO_DRIVER = 'wayland';
+    env.SDL_VIDEODRIVER = 'wayland';
   }
   return env;
 }

@@ -9,7 +9,7 @@ import { createAuthProvider } from '../../src/auth/provider.js';
 const GUID = '11111111-2222-3333-4444-555555555555';
 
 function fakeFactory({ clientId }) {
-  return { clientId, isExpired: () => false };
+  return { clientId };
 }
 
 test('a provider without a client id refuses sign-in operations', () => {

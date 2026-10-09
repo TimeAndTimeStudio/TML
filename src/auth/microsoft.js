@@ -15,12 +15,10 @@ import { createMinecraftAuth, readMinecraftXuid } from './minecraft.js';
 export const MSA_SCOPE = 'XboxLive.signin offline_access';
 export const DEVICE_CODE_URL = 'https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode';
 export const TOKEN_URL = 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token';
-export const REFRESH_GRANT = 'urn:ietf:params:oauth:grant-type:refresh_token';
 export const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
 export const DEFAULT_EXPIRES_IN = 3600;
 export const DEFAULT_POLL_INTERVAL = 5;
 export const SLOW_DOWN_INCREMENT_S = 5;
-export const EXPIRY_SKEW_MS = 60_000;
 
 const FORM_HEADERS = Object.freeze({ 'content-type': 'application/x-www-form-urlencoded;charset=utf-8' });
 
@@ -276,91 +274,10 @@ export function createMicrosoftAuth(options = {}) {
     return exchangeMsaTokens(msa, opts);
   }
 
-  async function refreshSession(session, opts = {}) {
-    if (session === null || typeof session !== 'object' || typeof session.refreshToken !== 'string') {
-      throw new AuthError('No refresh token stored for this account, sign in again', {
-        code: 'AUTH_REFRESH_FAILED',
-        status: 401,
-        details: { stage: 'refresh', reason: 'missing-refresh-token' },
-      });
-    }
-
-    let res;
-    try {
-      res = await http.postJson(
-        TOKEN_URL,
-        formBody({
-          grant_type: REFRESH_GRANT,
-          client_id: clientId,
-          refresh_token: session.refreshToken,
-          scope,
-        }),
-        { source: 'microsoft', headers: { ...FORM_HEADERS }, allowStatus: [400] }
-      );
-    } catch (err) {
-      if (err instanceof ValidationError) throw err;
-      if (err instanceof UpstreamError && err.upstreamStatus === 429) {
-        // กด refresh ถี่เกินไป → upstream ตอบ 429 — ส่งต่อเป็น 429 ไม่ใช่ 502 จะได้แยกออกจากกรณีพังจริง
-        throw new AuthError('Too many sign-in requests — wait a moment and try again', {
-          code: 'AUTH_THROTTLED',
-          status: 429,
-          cause: err,
-          details: { stage: 'refresh', status: 429 },
-        });
-      }
-      const upstreamStatus = err instanceof UpstreamError ? err.upstreamStatus ?? null : null;
-      const upstream = err instanceof UpstreamError ? err.details?.upstream ?? null : null;
-      throw new AuthError(
-        upstream ? `Failed to refresh the Microsoft session — ${upstream}` : 'Failed to refresh the Microsoft session',
-        {
-          code: 'AUTH_REFRESH_FAILED',
-          status: 502,
-          cause: err,
-          details: { stage: 'refresh', status: upstreamStatus, ...(upstream ? { upstream } : {}) },
-        },
-      );
-    }
-
-    if (res.status === 400) {
-      throw new AuthError('The stored refresh token is no longer valid, sign in again', {
-        code: 'AUTH_REFRESH_FAILED',
-        status: 401,
-        details: { stage: 'refresh', error: typeof res.data?.error === 'string' ? res.data.error : 'invalid_grant' },
-      });
-    }
-
-    const accessToken = typeof res.data?.access_token === 'string' ? res.data.access_token : null;
-    if (accessToken === null) {
-      throw new AuthError('Microsoft refresh response is missing the access token', {
-        code: 'AUTH_REFRESH_FAILED',
-        status: 502,
-        details: { stage: 'refresh', status: res.status },
-      });
-    }
-
-    logger?.debug('microsoft tokens refreshed', {});
-    return exchangeMsaTokens(
-      {
-        accessToken,
-        refreshToken:
-          typeof res.data?.refresh_token === 'string' ? res.data.refresh_token : session.refreshToken,
-      },
-      opts
-    );
-  }
-
-  function isExpired(session, { skewMs = EXPIRY_SKEW_MS } = {}) {
-    if (session === null || typeof session !== 'object') return true;
-    if (!Number.isFinite(session.expiresAt)) return true;
-    return session.expiresAt - skewMs <= now();
-  }
-
   return {
     startDeviceLogin,
     waitForDeviceToken,
     exchangeMsaTokens,
     completeDeviceLogin,
-    refreshSession,
-    isExpired,
   };
 }

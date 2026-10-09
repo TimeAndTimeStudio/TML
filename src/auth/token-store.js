@@ -51,8 +51,19 @@ export function createTokenStore({ file, logger = null }) {
     await fsp.chmod(file, SESSION_MODE).catch(() => {});
   }
 
+  function expired(session) {
+    return Number.isFinite(session.expiresAt) && session.expiresAt <= Date.now();
+  }
+
   async function read() {
-    if (cached !== null) return cached;
+    if (cached !== null) {
+      // อายุหมดระหว่างที่ cache ค้าง → ลบ session ทันที (logout auto)
+      if (expired(cached)) {
+        await clear();
+        return null;
+      }
+      return cached;
+    }
     if (!(await pathExists(file))) return null;
 
     let data;
@@ -66,6 +77,12 @@ export function createTokenStore({ file, logger = null }) {
 
     if (!isValidSession(data)) {
       logger?.warn('stored session has an invalid shape, signing out', {});
+      await removePath(file).catch(() => {});
+      return null;
+    }
+
+    if (expired(data)) {
+      logger?.debug('session expired, signing out', {});
       await removePath(file).catch(() => {});
       return null;
     }
@@ -90,8 +107,6 @@ export function createTokenStore({ file, logger = null }) {
       refreshToken: typeof session.refreshToken === 'string' ? session.refreshToken : null,
       expiresAt: Number.isFinite(session.expiresAt) ? session.expiresAt : null,
       xuid: typeof session.xuid === 'string' && session.xuid !== '' ? session.xuid : null,
-      // LIVE FLOW — เก็บว่า session นี้มาจาก live flow หรือไม่ (ใช้เลือก endpoint ตอน refresh) — ลบพร้อม src/auth/live.js
-      flow: session.flow === 'live' ? 'live' : null,
       savedAt: Date.now(),
     });
 
