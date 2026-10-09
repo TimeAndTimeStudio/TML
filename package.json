@@ -3,42 +3,13 @@
   "version": "0.1.1",
   "description": "TML — Time Mini Launcher, a self-contained Minecraft: Java Edition launcher for Linux (Node.js built-ins only)",
   "type": "module",
-  "main": "src/index.js",
-  "bin": {
-    "tml": "src/index.js"
-  },
-  "files": [
-    "src",
-    "web"
-  ],
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "test": "node --test \"tests/**/*.test.js\"",
-    "prepublishOnly": "npm test"
+    "test": "node --test \"tests/**/*.test.js\""
   },
   "engines": {
     "node": ">=18.17.0"
   },
-  "os": [
-    "linux"
-  ],
-  "keywords": [
-    "minecraft",
-    "launcher",
-    "minecraft-launcher",
-    "fabric",
-    "modrinth",
-    "cli"
-  ],
   "license": "GPL-3.0-or-later",
-  "author": "Time And Time Studio",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/TimeAndTimeStudio/TML.git"
-  },
-  "bugs": {
-    "url": "https://github.com/TimeAndTimeStudio/TML/issues"
-  },
-  "homepage": "https://github.com/TimeAndTimeStudio/TML#readme"
+  "author": "Time And Time Studio"
 }
