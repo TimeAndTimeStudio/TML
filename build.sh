@@ -54,5 +54,5 @@ printf '\n==> build finished\n'
 printf '  app (working build)   %s/tma/build/tml\n' "$ROOT"
 printf '  portable bundle       %s/dist/tml-%s/\n' "$ROOT" "$VER"
 printf '  tarball               %s/dist/tml-%s.tar.gz\n' "$ROOT" "$VER"
-printf '  run it now            %s/run-tml.sh\n' "$ROOT"
+printf '  run it now            %s/dist/tml-%s/run-tml.sh\n' "$ROOT" "$VER"
 printf '  on another machine    untar, then ./run-tml.sh\n'

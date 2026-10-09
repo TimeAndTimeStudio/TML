@@ -1,6 +1,6 @@
 # TML — Time Mini Launcher
 
-**TML** is a self-contained Minecraft: Java Edition launcher for Linux. It runs as a small local server with a browser-based interface — install it from npm, run `tml`, and open the printed URL.
+**TML** is a self-contained Minecraft: Java Edition launcher for Linux. It runs as a small local server with a browser-based interface — run `npm start` and open the printed URL.
 
 - **Zero runtime dependencies** — Node.js built-ins only, no build step, nothing to compile
 - **Local web UI** — dark, English-only interface served from `http://127.0.0.1:8620`
@@ -45,25 +45,12 @@
 | Browser | Any modern browser on the same machine |
 | Network | Required for version manifests, Fabric metadata, Modrinth, Microsoft sign-in, and runtime downloads |
 
-## Installation
+## Run
+
+From a clone (no dependencies to install, no build step):
 
 ```bash
-npm install --global tml-launcher
-```
-
-Run from a clone (no dependencies to install, no build step):
-
-```bash
-npm test        # run the test suite first
-npm start       # same as `tml`
-```
-
-## Usage
-
-```bash
-tml                 # start the launcher server and print the URL
-tml --help, -h      # show command-line help
-tml --version, -v   # print the installed version
+npm start
 ```
 
 On start, TML prints the address to open in a browser:
@@ -153,8 +140,7 @@ Error responses use `4xx/5xx` with a machine-readable `code` field (for example 
 ## Development
 
 ```bash
-npm test        # node --test — 402 tests (unit + API + workflow)
-npm run dev     # restart on file changes (node --watch)
+npm test        # node --test — 423 tests (unit + API + workflow)
 ```
 
 Project layout:
