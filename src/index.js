@@ -11,7 +11,6 @@ import { createLogger } from './core/logger.js';
 import { ensureDir, pathExists } from './core/filesystem.js';
 import { assertLinuxPlatform } from './core/platform.js';
 import { JavaRuntimeError } from './core/errors.js';
-import { openBrowser } from './core/browser.js';
 import { createApiRouter } from './server/routes.js';
 import { createTmlServer } from './server/server.js';
 import { createMinecraftApi } from './minecraft/api.js';
@@ -61,7 +60,6 @@ async function printHelp() {
       '  TML_LOG_LEVEL      debug | info | warn | error | silent (default warn)',
       '  TML_DATA_DIR       Data directory (default ~/.tml-launcher)',
       '  TML_MSA_CLIENT_ID  Microsoft Entra (Azure) application client ID (GUID)',
-      '  TML_NO_BROWSER     Set to 1 to skip opening the web UI automatically',
       '',
       'Requirements: Linux, Node.js >= 18.17',
       '',
@@ -242,8 +240,6 @@ async function main() {
     const url = `http://${config.server.host}:${port}`;
     logger.info('launcher ready', { url });
     process.stdout.write(`\n  TML — Time Mini Launcher\n  ${url}\n\n`);
-    // เปิดหน้าเว็บให้เลยหลังเริ่ม server (Linux เท่านั้น — เงียบถ้าเครื่องไม่มี GUI/xdg-open)
-    if (openBrowser(url)) logger.debug('auto-opening web UI', { url });
   });
 
   process.on('SIGINT', () => shutdown('SIGINT'));

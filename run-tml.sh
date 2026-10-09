@@ -14,8 +14,6 @@
 #
 # Environment (passed through to the server):
 #   TML_PORT, TML_LOG_LEVEL, TML_MSA_CLIENT_ID
-#   TML_NO_BROWSER — default "1" here: the app window already shows the UI,
-#     so the server must not xdg-open the system browser. Set 0 to override.
 
 set -euo pipefail
 
@@ -39,7 +37,7 @@ if health; then
   printf 'TML server already running on %s — reusing it.\n' "$BASE"
 else
   printf 'Starting the TML server on %s ...\n' "$BASE"
-  TML_NO_BROWSER="${TML_NO_BROWSER:-1}" node "$ROOT/src/index.js" &
+  node "$ROOT/src/index.js" &
   NODE_PID=$!
   STARTED_NODE=1
   for _ in $(seq 1 150); do
