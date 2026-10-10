@@ -123,7 +123,7 @@ the **Settings → Network access** card can render it live:
 {
   "version": "0.1.1",
   "rules": {
-    "protocols": ["http:", "https:"],
+    "protocols": ["https:"],
     "defaultPortOnly": true,
     "credentialsNotAllowed": true,
     "categoryScoped": true
@@ -136,8 +136,8 @@ the **Settings → Network access** card can render it live:
 ```
 
 `rules` states the constraints enforced alongside the host list: only
-`http:`/`https:`, default ports only, no credentials embedded in URLs, and
-each group scoped to its own source.
+`https:` on port 443 (TLS only, no plain HTTP, no other ports), no credentials
+embedded in URLs, and each group scoped to its own source.
 
 | Group | Hosts | Used for |
 | --- | --- | --- |

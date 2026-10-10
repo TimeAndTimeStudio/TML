@@ -21,7 +21,7 @@ test('official Minecraft / Mojang hosts are allowed', () => {
     'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json',
     'https://launchermeta.mojang.com/1.20.1/client.json',
     'https://piston-data.mojang.com/v1/objects/abc/client.jar',
-    'http://libraries.minecraft.net/net/minecraft/client.jar',
+    'https://libraries.minecraft.net/net/minecraft/client.jar',
     'https://resources.download.minecraft.net/ab/abcdef.jar',
   ];
 
@@ -109,10 +109,14 @@ test('protocol, port and credential rules are enforced', () => {
   assert.throws(() => validateUrl('file:///etc/passwd'), SourceNotAllowedError);
   assert.throws(() => validateUrl('ftp://piston-meta.mojang.com/file'), SourceNotAllowedError);
   assert.throws(() => validateUrl('javascript:alert(1)'), (err) => err instanceof ValidationError || err instanceof SourceNotAllowedError);
+  assert.throws(() => validateUrl('http://api.modrinth.com/v2/search'), SourceNotAllowedError, 'plain HTTP is rejected everywhere');
+  assert.throws(() => validateUrl('http://libraries.minecraft.net/client.jar'), SourceNotAllowedError, 'even on an allowed host');
   assert.throws(() => validateUrl('https://api.modrinth.com:8443/v2/search'), SourceNotAllowedError);
+  assert.throws(() => validateUrl('https://api.modrinth.com:80/v2/search'), SourceNotAllowedError, 'only port 443 is accepted');
   assert.throws(() => validateUrl('https://user:pass@api.modrinth.com/v2/search'), SourceNotAllowedError);
   assert.equal(isAllowedUrl('https://api.modrinth.com/v2/search'), true);
-  assert.equal(isAllowedUrl('http://api.modrinth.com/v2/search'), true);
+  assert.equal(isAllowedUrl('https://api.modrinth.com:443/v2/search'), true, 'the explicit default TLS port is fine');
+  assert.equal(isAllowedUrl('http://api.modrinth.com/v2/search'), false);
 });
 
 test('malformed input and unknown source ids fail loudly', () => {

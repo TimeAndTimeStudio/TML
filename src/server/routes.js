@@ -1541,7 +1541,7 @@ export function createApiRouter({
     body: {
       version: VERSION,
       rules: {
-        protocols: ['http:', 'https:'],
+        protocols: ['https:'],
         defaultPortOnly: true,
         credentialsNotAllowed: true,
         categoryScoped: true,

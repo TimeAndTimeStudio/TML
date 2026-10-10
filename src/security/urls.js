@@ -4,7 +4,8 @@
 
 import { SourceNotAllowedError, ValidationError } from '../core/errors.js';
 
-const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
+// ออกอินเทอร์เน็ตเฉพาะ https เท่านั้น — port ถูกบังคับเป็น 443 (ค่า default ของ https) ด้วยเงื่อนไขด้านล่าง
+const ALLOWED_PROTOCOLS = new Set(['https:']);
 
 export const OFFICIAL_SOURCES = Object.freeze({
   minecraft: Object.freeze({
@@ -126,8 +127,9 @@ export function validateUrl(input, { source } = {}) {
     });
   }
 
+  // URL ที่ระบุ port มาตรฐานของ https (443) จะถูก URL parser ตัดออกอยู่แล้ว → เงื่อนไขนี้คือ "443 เท่านั้น"
   if (url.port !== '') {
-    throw new SourceNotAllowedError(`Port ${url.port} is not allowed, use the default port`, {
+    throw new SourceNotAllowedError(`Port ${url.port} is not allowed — only the default HTTPS port 443`, {
       details: { host: normalizeHost(url.hostname), port: url.port, source: source ?? null },
     });
   }
