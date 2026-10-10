@@ -285,6 +285,7 @@ function activateView(name) {
   }
   if (view === 'settings') {
     loadJavaRuntimes();
+    loadNetworkSources();
   }
   renderQuickInstances();
 }
@@ -3614,6 +3615,32 @@ function javaRuntimeLabels(list) {
     if (counts.get(base) > 1) labels.set(runtime.name, `${base} — ${runtime.name}`);
   }
   return labels;
+}
+
+let networkSourcesLoaded = false;
+
+async function loadNetworkSources() {
+  if (networkSourcesLoaded) return;
+  try {
+    const data = await fetchJson('/api/sources');
+    const tbody = document.querySelector('#networkSources tbody');
+    if (!tbody) return;
+    const rows = (data.sources ?? []).map((source) => {
+      const tr = document.createElement('tr');
+      const th = document.createElement('th');
+      th.textContent = source.label;
+      const td = document.createElement('td');
+      td.textContent = (source.hosts ?? []).join(', ');
+      tr.append(th, td);
+      return tr;
+    });
+    if (rows.length > 0) {
+      tbody.replaceChildren(...rows);
+      networkSourcesLoaded = true;
+    }
+  } catch {
+    // โหลดไม่ได้ก็ปล่อยแถว Loading… ค้างไว้
+  }
 }
 
 async function loadJavaRuntimes({ force = false } = {}) {

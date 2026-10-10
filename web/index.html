@@ -522,6 +522,31 @@
               <div><dt>Platform</dt><dd id="factPlatform">—</dd></div>
             </dl>
           </div>
+
+          <div class="card">
+            <h3>Network access</h3>
+            <p class="muted small">
+              Every remote host TML may reach — fixed by an allowlist and used
+              only when the matching feature runs; any other host is refused.
+              The UI itself talks only to this machine, its one remote image
+              source being Modrinth icons (pinned by the page's
+              Content-Security-Policy). No telemetry, no analytics.
+            </p>
+            <table class="table" id="networkSources">
+              <tbody>
+                <tr><td class="muted small">Loading…</td></tr>
+              </tbody>
+            </table>
+            <p class="muted small">
+              Opened in your own browser during sign-in:
+              <strong>microsoft.com/link</strong>.
+              Never contacted: <strong>textures.minecraft.net</strong> (skins
+              are read from the local cache) and <strong>account.mojang.com</strong>
+              (only a comment inside <code>eula.txt</code>).
+              The running game makes its own connections, as any Minecraft
+              client does.
+            </p>
+          </div>
         </section>
       </main>
     </div>
