@@ -47,4 +47,3 @@ tar -C "$DIST" -czf "$DIST/tml-$VER.tar.gz" "tml-$VER"
 printf '\n  folder    %s  (%s)\n' "$OUT" "$(du -sh --apparent-size "$OUT" | cut -f1)"
 printf '  tarball   %s  (%s)\n' "$DIST/tml-$VER.tar.gz" "$(du -sh "$DIST/tml-$VER.tar.gz" | cut -f1)"
 printf '  node app synced, tml binary untouched\n'
-printf '\ndone\n'
