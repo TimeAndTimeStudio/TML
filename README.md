@@ -56,18 +56,19 @@ malformed JSON, non-GUID client ID) fail startup immediately with `ConfigError`.
 
 ```json
 {
-  "server": { "host": "127.0.0.1", "port": 8620 },
-  "log": { "level": "warn" }
+  "host": "127.0.0.1",
+  "port": 8620,
+  "log": "warn"
 }
 ```
 
 | Key | Effect |
 | --- | --- |
-| `server.host`, `server.port` | Bind address — requires a restart |
-| `log.level` | Applied immediately (also editable in the UI) |
-| `auth.clientId` | Overrides `TML_MSA_CLIENT_ID` |
-| `auth.offlineName` | Player name used when no Microsoft session exists |
-| `java.runtime` | Selected runtime name, or omitted for automatic selection |
+| `host`, `port` | Bind address — requires a restart |
+| `log` | Applied immediately (also editable in the UI) |
+| `clientId` | Overrides `TML_MSA_CLIENT_ID` |
+| `offlineName` | Player name used when no Microsoft session exists |
+| `java` | Selected runtime name, or omitted for automatic selection |
 
 ## HTTP API
 

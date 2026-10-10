@@ -225,7 +225,8 @@ test('auth API requires both an auth client and a token store', () => {
 test('sign-in is configured out of the box with the built-in default app', async () => {
   const view = await request('/api/config');
   assert.equal(view.status, 200);
-  assert.deepEqual(view.json.auth, { configured: true, source: 'default', offlineName: null });
+  assert.deepEqual(view.json.auth, { configured: true, source: 'default' });
+  assert.equal(view.json.offlineName, null);
   assert.equal(view.text.includes(DEFAULT_MSA_CLIENT_ID), false, 'public config must not leak the client id');
 
   const started = await request('/api/auth/device', { method: 'POST', body: {} });
@@ -378,10 +379,10 @@ test('launch prefers the Microsoft session but falls back to the configured offl
 
   const patched = await request('/api/config', {
     method: 'PATCH',
-    body: { auth: { offlineName: 'Offline_Steve' } },
+    body: { offlineName: 'Offline_Steve' },
   });
   assert.equal(patched.status, 200);
-  assert.equal(patched.json.config.auth.offlineName, 'Offline_Steve');
+  assert.equal(patched.json.config.offlineName, 'Offline_Steve');
 
   const offline = await request('/api/instances/stub1/launch', { method: 'POST', body: {} });
   assert.equal(offline.status, 202);
@@ -394,10 +395,10 @@ test('launch prefers the Microsoft session but falls back to the configured offl
 
   const cleared = await request('/api/config', {
     method: 'PATCH',
-    body: { auth: { offlineName: null } },
+    body: { offlineName: null },
   });
   assert.equal(cleared.status, 200);
-  assert.equal(cleared.json.config.auth.offlineName, null);
+  assert.equal(cleared.json.config.offlineName, null);
 });
 
 test('skin change requires a session, forwards the token and validates input', async () => {

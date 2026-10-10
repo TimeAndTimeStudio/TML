@@ -192,10 +192,10 @@ test('POST download installs a runtime, records it as chosen and persists the ch
   assert.deepEqual(java.state.downloads.at(-1), { name: 'java-runtime-delta', force: true });
 
   const configRes = await request(port, '/api/config');
-  assert.equal(configRes.json.java.runtime, 'java-runtime-delta');
+  assert.equal(configRes.json.java, 'java-runtime-delta');
 
   const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
-  assert.equal(persisted.java.runtime, 'java-runtime-delta');
+  assert.equal(persisted.java, 'java-runtime-delta');
 
   const list = await request(port, '/api/java/runtimes');
   assert.equal(list.json.chosen, 'java-runtime-delta');
@@ -222,22 +222,22 @@ test('POST download validates names and 404s unknown runtimes', async () => {
 test('PATCH /api/config sets, validates and clears the chosen java runtime', async () => {
   const patched = await request(port, '/api/config', {
     method: 'PATCH',
-    body: { java: { runtime: 'java-runtime-gamma' } },
+    body: { java: 'java-runtime-gamma' },
   });
   assert.equal(patched.status, 200, patched.text);
   assert.equal(patched.json.saved, true);
-  assert.deepEqual(patched.json.changed, ['java.runtime']);
+  assert.deepEqual(patched.json.changed, ['java']);
   assert.deepEqual(patched.json.restartRequired, []);
-  assert.equal(patched.json.config.java.runtime, 'java-runtime-gamma');
+  assert.equal(patched.json.config.java, 'java-runtime-gamma');
   assert.equal(java.state.chosen, 'java-runtime-gamma');
 
   const list = await request(port, '/api/java/runtimes');
   assert.equal(list.json.chosen, 'java-runtime-gamma');
 
   const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
-  assert.equal(persisted.java.runtime, 'java-runtime-gamma');
+  assert.equal(persisted.java, 'java-runtime-gamma');
 
-  const invalid = await request(port, '/api/config', { method: 'PATCH', body: { java: { runtime: 'UPPER' } } });
+  const invalid = await request(port, '/api/config', { method: 'PATCH', body: { java: 'UPPER' } });
   assert.equal(invalid.status, 400);
   assert.equal(invalid.json.error.code, 'INVALID_JAVA_RUNTIME');
 
@@ -245,12 +245,12 @@ test('PATCH /api/config sets, validates and clears the chosen java runtime', asy
   assert.equal(empty.status, 400);
   assert.equal(empty.json.error.code, 'CONFIG_PATCH_EMPTY');
 
-  const cleared = await request(port, '/api/config', { method: 'PATCH', body: { java: { runtime: null } } });
+  const cleared = await request(port, '/api/config', { method: 'PATCH', body: { java: null } });
   assert.equal(cleared.status, 200);
-  assert.deepEqual(cleared.json.changed, ['java.runtime']);
-  assert.equal(cleared.json.config.java.runtime, null);
+  assert.deepEqual(cleared.json.changed, ['java']);
+  assert.equal(cleared.json.config.java, null);
   assert.equal(java.state.chosen, null);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8')).java.runtime, null);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8')).java, null);
 });
 
 test('PLAY refuses to launch until a downloaded java runtime is selected', async () => {
@@ -261,7 +261,7 @@ test('PLAY refuses to launch until a downloaded java runtime is selected', async
   assert.equal(unchosen.json.error.details.chosen, null);
 
   // เลือก runtime ที่ยังไม่ได้โหลด → ยังใช้ไม่ได้
-  await request(port, '/api/config', { method: 'PATCH', body: { java: { runtime: 'java-runtime-gamma' } } });
+  await request(port, '/api/config', { method: 'PATCH', body: { java: 'java-runtime-gamma' } });
   const notDownloaded = await request(port, '/api/instances/no-such-instance/launch', { method: 'POST', body: {} });
   assert.equal(notDownloaded.status, 409, notDownloaded.text);
   assert.equal(notDownloaded.json.error.code, 'JAVA_RUNTIME_UNAVAILABLE');
@@ -321,9 +321,9 @@ test('DELETE removes a downloaded runtime and clears the persisted selection', a
   );
 
   const configRes = await request(port, '/api/config');
-  assert.equal(configRes.json.java.runtime, null, 'the cleared selection is served live');
+  assert.equal(configRes.json.java, null, 'the cleared selection is served live');
   const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
-  assert.equal(persisted.java.runtime, null, 'the cleared selection is persisted to config.json');
+  assert.equal(persisted.java, null, 'the cleared selection is persisted to config.json');
 
   const again = await request(port, '/api/java/runtimes/java-runtime-gamma', { method: 'DELETE' });
   assert.equal(again.status, 404, 'deleting twice must not succeed');

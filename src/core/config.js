@@ -160,7 +160,7 @@ function readConfigFile(file) {
 
 function normalizeHost(value) {
   if (typeof value !== 'string' || value.trim() === '') {
-    throw new ConfigError('server.host must be a non-empty string');
+    throw new ConfigError('host must be a non-empty string');
   }
   return value.trim();
 }
@@ -168,7 +168,7 @@ function normalizeHost(value) {
 function normalizePort(value) {
   const port = typeof value === 'string' ? Number(value.trim()) : value;
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
-    throw new ConfigError(`server.port must be an integer between 0 and 65535 (got ${JSON.stringify(value)})`);
+    throw new ConfigError(`port must be an integer between 0 and 65535 (got ${JSON.stringify(value)})`);
   }
   return port;
 }
@@ -176,7 +176,7 @@ function normalizePort(value) {
 function normalizeLevel(value) {
   const level = typeof value === 'string' ? value.trim().toLowerCase() : value;
   if (!LOG_LEVELS.has(level)) {
-    throw new ConfigError(`log.level must be one of: ${[...LOG_LEVELS].join(', ')} (got ${JSON.stringify(value)})`);
+    throw new ConfigError(`log must be one of: ${[...LOG_LEVELS].join(', ')} (got ${JSON.stringify(value)})`);
   }
   return level;
 }
@@ -189,7 +189,7 @@ const JAVA_RUNTIME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 function normalizeJavaRuntime(value) {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'string' || !JAVA_RUNTIME_PATTERN.test(value)) {
-    throw new ConfigError('java.runtime must be a runtime name like "java-runtime-gamma"');
+    throw new ConfigError('java must be a runtime name like "java-runtime-gamma"');
   }
   return value;
 }
@@ -200,19 +200,19 @@ function normalizeOfflineName(value) {
   if (value === undefined || value === null || value === '') return null;
   const trimmed = typeof value === 'string' ? value.trim() : value;
   if (typeof trimmed !== 'string' || !OFFLINE_NAME_PATTERN.test(trimmed)) {
-    throw new ConfigError('auth.offlineName must be 3–16 characters of a–z, A–Z, 0–9 or "_"');
+    throw new ConfigError('offlineName must be 3–16 characters of a–z, A–Z, 0–9 or "_"');
   }
   return trimmed;
 }
 
 function normalizeClientId(value) {
   if (typeof value !== 'string' || value.trim() === '') {
-    throw new ConfigError('auth.clientId must be a non-empty Application (client) ID string');
+    throw new ConfigError('clientId must be a non-empty Application (client) ID string');
   }
   const trimmed = value.trim();
   if (!CLIENT_ID_PATTERN.test(trimmed)) {
     throw new ConfigError(
-      'auth.clientId must be an Application (client) ID GUID like 00000000-0000-0000-0000-000000000000',
+      'clientId must be an Application (client) ID GUID like 00000000-0000-0000-0000-000000000000',
     );
   }
   return trimmed;
@@ -223,24 +223,19 @@ export function loadConfig({ env = process.env } = {}) {
   const configFile = path.join(dataDir, 'config.json');
   const file = readConfigFile(configFile);
 
-  const fileServer = isPlainObject(file.server) ? file.server : {};
-  const fileLog = isPlainObject(file.log) ? file.log : {};
-  const fileAuth = isPlainObject(file.auth) ? file.auth : {};
-  const fileJava = isPlainObject(file.java) ? file.java : {};
-
-  const host = normalizeHost(env.TML_HOST ?? fileServer.host ?? DEFAULTS.host);
-  const port = normalizePort(env.TML_PORT ?? fileServer.port ?? DEFAULTS.port);
-  const level = normalizeLevel(env.TML_LOG_LEVEL ?? fileLog.level ?? DEFAULTS.logLevel);
-  const javaRuntime = normalizeJavaRuntime(fileJava.runtime);
-  const offlineName = normalizeOfflineName(fileAuth.offlineName);
+  const host = normalizeHost(env.TML_HOST ?? file.host ?? DEFAULTS.host);
+  const port = normalizePort(env.TML_PORT ?? file.port ?? DEFAULTS.port);
+  const level = normalizeLevel(env.TML_LOG_LEVEL ?? file.log ?? DEFAULTS.logLevel);
+  const javaRuntime = normalizeJavaRuntime(file.java);
+  const offlineName = normalizeOfflineName(file.offlineName);
 
   let authClientId = DEFAULT_MSA_CLIENT_ID;
   let authSource = 'default';
   if (typeof env.TML_MSA_CLIENT_ID === 'string' && env.TML_MSA_CLIENT_ID.trim() !== '') {
     authClientId = normalizeClientId(env.TML_MSA_CLIENT_ID);
     authSource = 'env';
-  } else if (typeof fileAuth.clientId === 'string' && fileAuth.clientId.trim() !== '') {
-    authClientId = normalizeClientId(fileAuth.clientId);
+  } else if (typeof file.clientId === 'string' && file.clientId.trim() !== '') {
+    authClientId = normalizeClientId(file.clientId);
     authSource = 'file';
   }
 
@@ -287,7 +282,8 @@ export function publicConfig(config) {
   return {
     name: config.name,
     version: config.version,
-    server: { host: config.server.host, port: config.server.port },
+    host: config.server.host,
+    port: config.server.port,
     paths: {
       dataDir: config.paths.dataDir,
       instancesDir: config.paths.instancesDir,
@@ -297,12 +293,12 @@ export function publicConfig(config) {
       webDir: config.paths.webDir,
     },
     pendingDataDir: pendingDataDir !== null && pendingDataDir !== config.paths.dataDir ? pendingDataDir : null,
-    log: { level: config.log.level },
+    log: config.log.level,
     auth: {
       configured: Boolean(config.auth?.clientId),
       source: config.auth?.source ?? null,
-      offlineName: config.auth?.offlineName ?? null,
     },
-    java: { runtime: config.java?.runtime ?? null },
+    offlineName: config.auth?.offlineName ?? null,
+    java: config.java?.runtime ?? null,
   };
 }

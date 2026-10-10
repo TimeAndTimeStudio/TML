@@ -1071,8 +1071,7 @@ export function createApiRouter({
   async function saveJavaRuntime(name) {
     const current = await readJson(config.paths.configFile, { optional: true });
     const base = isPlainObject(current) ? current : {};
-    const fileJava = isPlainObject(base.java) ? base.java : {};
-    await writeJson(config.paths.configFile, { ...base, java: { ...fileJava, runtime: name } });
+    await writeJson(config.paths.configFile, { ...base, java: name });
   }
 
   if ((auth && !account) || (!auth && account)) {
@@ -1328,15 +1327,16 @@ export function createApiRouter({
 
   router.patch('/api/config', async ({ body }) => {
     const patch = isPlainObject(body) ? body : {};
-    const serverPatch = isPlainObject(patch.server) ? patch.server : null;
-    const logPatch = isPlainObject(patch.log) ? patch.log : null;
-    const javaPatch = isPlainObject(patch.java) ? patch.java : null;
-    const authPatch = isPlainObject(patch.auth) ? patch.auth : null;
+    const hasHost = patch.host !== undefined;
+    const hasPort = patch.port !== undefined;
+    const hasLog = patch.log !== undefined;
+    const hasJava = patch.java !== undefined;
+    const hasOfflineName = patch.offlineName !== undefined;
     const dataDirPatch = patch.dataDir !== undefined && patch.dataDir !== null ? patch.dataDir : null;
-    if (!serverPatch && !logPatch && !javaPatch && !authPatch && dataDirPatch === null) {
-      throw new ValidationError('Provide a "server", "log", "java", "auth" or "dataDir" field to update', {
+    if (!hasHost && !hasPort && !hasLog && !hasJava && !hasOfflineName && dataDirPatch === null) {
+      throw new ValidationError('Provide a "host", "port", "log", "java", "offlineName" or "dataDir" field to update', {
         code: 'CONFIG_PATCH_EMPTY',
-        details: { fields: ['server', 'log', 'java', 'auth', 'dataDir'] },
+        details: { fields: ['host', 'port', 'log', 'java', 'offlineName', 'dataDir'] },
       });
     }
 
@@ -1405,94 +1405,94 @@ export function createApiRouter({
       }
     }
 
-    if (serverPatch && serverPatch.host !== undefined) {
+    if (hasHost) {
       if (liveConfig.server.hostFromEnv) {
-        throw new ValidationError('server.host comes from the TML_HOST environment variable — change it there instead of config.json', {
+        throw new ValidationError('host comes from the TML_HOST environment variable — change it there instead of config.json', {
           code: 'CONFIG_FROM_ENV',
           status: 409,
-          details: { field: 'server.host' },
+          details: { field: 'host' },
         });
       }
-      if (typeof serverPatch.host !== 'string' || serverPatch.host.trim() === '') {
-        throw new ValidationError('Field "server.host" must be a non-empty string', {
+      if (typeof patch.host !== 'string' || patch.host.trim() === '') {
+        throw new ValidationError('Field "host" must be a non-empty string', {
           code: 'INVALID_HOST',
-          details: { field: 'server.host' },
+          details: { field: 'host' },
         });
       }
-      next.host = serverPatch.host.trim();
-      if (next.host !== liveConfig.server.host) changedFields.push('server.host');
+      next.host = patch.host.trim();
+      if (next.host !== liveConfig.server.host) changedFields.push('host');
     }
 
-    if (serverPatch && serverPatch.port !== undefined) {
+    if (hasPort) {
       if (liveConfig.server.portFromEnv) {
-        throw new ValidationError('server.port comes from the TML_PORT environment variable — change it there instead of config.json', {
+        throw new ValidationError('port comes from the TML_PORT environment variable — change it there instead of config.json', {
           code: 'CONFIG_FROM_ENV',
           status: 409,
-          details: { field: 'server.port' },
+          details: { field: 'port' },
         });
       }
-      const port = typeof serverPatch.port === 'string' ? Number(serverPatch.port.trim()) : serverPatch.port;
+      const port = typeof patch.port === 'string' ? Number(patch.port.trim()) : patch.port;
       if (!Number.isInteger(port) || port < 0 || port > 65535) {
-        throw new ValidationError('Field "server.port" must be an integer between 0 and 65535', {
+        throw new ValidationError('Field "port" must be an integer between 0 and 65535', {
           code: 'INVALID_PORT',
-          details: { field: 'server.port' },
+          details: { field: 'port' },
         });
       }
       next.port = port;
-      if (next.port !== liveConfig.server.port) changedFields.push('server.port');
+      if (next.port !== liveConfig.server.port) changedFields.push('port');
     }
 
-    if (logPatch && logPatch.level !== undefined) {
+    if (hasLog) {
       if (liveConfig.log.fromEnv) {
-        throw new ValidationError('log.level comes from the TML_LOG_LEVEL environment variable — change it there instead of config.json', {
+        throw new ValidationError('log comes from the TML_LOG_LEVEL environment variable — change it there instead of config.json', {
           code: 'CONFIG_FROM_ENV',
           status: 409,
-          details: { field: 'log.level' },
+          details: { field: 'log' },
         });
       }
-      const level = typeof logPatch.level === 'string' ? logPatch.level.trim().toLowerCase() : logPatch.level;
+      const level = typeof patch.log === 'string' ? patch.log.trim().toLowerCase() : patch.log;
       if (!LOG_LEVEL_SET.has(level)) {
-        throw new ValidationError(`Field "log.level" must be one of: ${LOG_LEVEL_VALUES.join(', ')}`, {
+        throw new ValidationError(`Field "log" must be one of: ${LOG_LEVEL_VALUES.join(', ')}`, {
           code: 'INVALID_LOG_LEVEL',
-          details: { field: 'log.level' },
+          details: { field: 'log' },
         });
       }
       next.level = level;
-      if (next.level !== liveConfig.log.level) changedFields.push('log.level');
+      if (next.level !== liveConfig.log.level) changedFields.push('log');
     }
 
-    if (javaPatch && javaPatch.runtime !== undefined) {
-      nextJava = javaPatch.runtime === null ? null : validateRuntimeName(javaPatch.runtime);
-      if (nextJava !== (liveConfig.java?.runtime ?? null)) changedFields.push('java.runtime');
+    if (hasJava) {
+      nextJava = patch.java === null ? null : validateRuntimeName(patch.java);
+      if (nextJava !== (liveConfig.java?.runtime ?? null)) changedFields.push('java');
     }
 
-    if (authPatch && authPatch.offlineName !== undefined) {
-      const raw = authPatch.offlineName;
+    if (hasOfflineName) {
+      const raw = patch.offlineName;
       if (raw !== null && typeof raw !== 'string') {
-        throw new ValidationError('Field "auth.offlineName" must be a string or null', {
+        throw new ValidationError('Field "offlineName" must be a string or null', {
           code: 'INVALID_OFFLINE_NAME',
-          details: { field: 'auth.offlineName' },
+          details: { field: 'offlineName' },
         });
       }
       const value = raw === null ? null : raw.trim();
       if (value !== null && !OFFLINE_NAME_PATTERN.test(value)) {
-        throw new ValidationError('Field "auth.offlineName" must be 3–16 characters of a–z, A–Z, 0–9 or "_"', {
+        throw new ValidationError('Field "offlineName" must be 3–16 characters of a–z, A–Z, 0–9 or "_"', {
           code: 'INVALID_OFFLINE_NAME',
-          details: { field: 'auth.offlineName' },
+          details: { field: 'offlineName' },
         });
       }
       nextOfflineName = value;
-      if (nextOfflineName !== (liveConfig.auth?.offlineName ?? null)) changedFields.push('auth.offlineName');
+      if (nextOfflineName !== (liveConfig.auth?.offlineName ?? null)) changedFields.push('offlineName');
     }
 
     if (nextDataDir !== null) changedFields.push('dataDir');
 
     const saved = changedFields.length > 0;
     const restartRequired = [];
-    if (changedFields.some((field) => field.startsWith('server.'))) restartRequired.push('server');
+    if (changedFields.includes('host') || changedFields.includes('port')) restartRequired.push('server');
     if (changedFields.includes('dataDir')) restartRequired.push('dataDir');
-    if (changedFields.includes('log.level')) logger.setLevel(next.level);
-    if (changedFields.includes('java.runtime') && typeof java?.setChosen === 'function') java.setChosen(nextJava);
+    if (changedFields.includes('log')) logger.setLevel(next.level);
+    if (changedFields.includes('java') && typeof java?.setChosen === 'function') java.setChosen(nextJava);
 
     liveConfig = {
       ...liveConfig,
@@ -1509,29 +1509,13 @@ export function createApiRouter({
       const current = await readJson(config.paths.configFile, { optional: true });
       const base = isPlainObject(current) ? current : {};
       const nextFile = { ...base };
-      const serverChanged = changedFields.some((field) => field.startsWith('server.'));
-      const logChanged = changedFields.includes('log.level');
-      if (serverChanged) {
-        const fileServer = isPlainObject(base.server) ? base.server : {};
-        nextFile.server = { ...fileServer };
-        if (changedFields.includes('server.host')) nextFile.server.host = next.host;
-        if (changedFields.includes('server.port')) nextFile.server.port = next.port;
-      }
-      if (logChanged) {
-        const fileLog = isPlainObject(base.log) ? base.log : {};
-        nextFile.log = { ...fileLog, level: next.level };
-      }
-      if (changedFields.includes('java.runtime')) {
-        const fileJava = isPlainObject(base.java) ? base.java : {};
-        nextFile.java = { ...fileJava, runtime: nextJava };
-      }
-      if (changedFields.some((field) => field.startsWith('auth.'))) {
-        const fileAuth = isPlainObject(base.auth) ? base.auth : {};
-        nextFile.auth = { ...fileAuth };
-        if (changedFields.includes('auth.offlineName')) {
-          if (nextOfflineName === null) delete nextFile.auth.offlineName;
-          else nextFile.auth.offlineName = nextOfflineName;
-        }
+      if (changedFields.includes('host')) nextFile.host = next.host;
+      if (changedFields.includes('port')) nextFile.port = next.port;
+      if (changedFields.includes('log')) nextFile.log = next.level;
+      if (changedFields.includes('java')) nextFile.java = nextJava;
+      if (changedFields.includes('offlineName')) {
+        if (nextOfflineName === null) delete nextFile.offlineName;
+        else nextFile.offlineName = nextOfflineName;
       }
       await writeJson(config.paths.configFile, nextFile);
       logger.info('launcher configuration updated', { changed: changedFields, restartRequired });

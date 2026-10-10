@@ -41,7 +41,7 @@ test('environment overrides config file', () => {
   try {
     fs.writeFileSync(
       path.join(dir, 'config.json'),
-      JSON.stringify({ server: { host: '0.0.0.0', port: 1111 }, log: { level: 'debug' } })
+      JSON.stringify({ host: '0.0.0.0', port: 1111, log: 'debug' })
     );
 
     const fromFile = loadConfig({ env: { TML_DATA_DIR: dir } });
@@ -92,7 +92,8 @@ test('publicConfig exposes only the safe subset', () => {
     assert.equal(view.name, 'TML');
     assert.equal(view.version, config.version);
     assert.ok(json.includes(dir));
-    assert.ok(!('file' in view.log));
+    assert.equal(typeof view.log, 'string', 'the log level is a flat string, not a group');
+    assert.ok(!json.includes('tml.log'), 'the log file path must stay private');
     assert.ok(!('projectRoot' in view));
     assert.equal(view.paths.exportsDir, config.paths.exportsDir, 'exportsDir is public so the export modal can default to it');
     assert.ok(!('window' in view));
@@ -113,15 +114,17 @@ test('own Microsoft app client id defaults to the built-in app, overridable by f
     assert.equal(none.auth.source, 'default');
     assert.equal(none.auth.offlineName, null, 'no offline name is configured by default');
     assert.match(DEFAULT_MSA_CLIENT_ID, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'the built-in default must be a GUID');
-    assert.deepEqual(publicConfig(none).auth, { configured: true, source: 'default', offlineName: null });
+    assert.deepEqual(publicConfig(none).auth, { configured: true, source: 'default' });
+    assert.equal(publicConfig(none).offlineName, null, 'no offline name is configured by default');
     assert.ok(!JSON.stringify(publicConfig(none)).includes(DEFAULT_MSA_CLIENT_ID), 'public config must not leak the raw client id');
 
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ auth: { clientId: GUID } }));
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ clientId: GUID }));
     const fromFile = loadConfig({ env: { TML_DATA_DIR: dir } });
     assert.equal(fromFile.auth.clientId, GUID);
     assert.equal(fromFile.auth.source, 'file');
     const view = publicConfig(fromFile);
-    assert.deepEqual(view.auth, { configured: true, source: 'file', offlineName: null });
+    assert.deepEqual(view.auth, { configured: true, source: 'file' });
+    assert.equal(view.offlineName, null);
     assert.ok(!JSON.stringify(view).includes(GUID), 'public config must not leak the raw client id');
 
     const OTHER = '22222222-3333-4444-5555-666666666666';
@@ -138,7 +141,7 @@ test('invalid Microsoft app client ids raise ConfigError', () => {
   try {
     assert.throws(() => loadConfig({ env: { TML_DATA_DIR: dir, TML_MSA_CLIENT_ID: 'not-a-guid' } }), ConfigError);
 
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ auth: { clientId: 'also-not-a-guid' } }));
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ clientId: 'also-not-a-guid' }));
     assert.throws(() => loadConfig({ env: { TML_DATA_DIR: dir } }), ConfigError);
   } finally {
     cleanup(dir);

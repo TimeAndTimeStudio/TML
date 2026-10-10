@@ -71,7 +71,7 @@ test('GET /api/config returns launcher configuration', async () => {
   assert.equal(res.status, 200);
 
   const payload = JSON.parse(res.body);
-  assert.equal(payload.server.port, 0);
+  assert.equal(payload.port, 0);
   assert.equal(payload.phase, undefined);
   assert.ok(payload.paths.dataDir);
   assert.ok(!/token|password|secret/i.test(res.body));

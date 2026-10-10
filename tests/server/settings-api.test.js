@@ -62,7 +62,7 @@ before(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tml-settings-'));
   fs.writeFileSync(
     path.join(dataDir, 'config.json'),
-    `${JSON.stringify({ auth: { clientId: SEEDED_CLIENT_ID }, log: { level: 'info' } }, null, 2)}\n`,
+    `${JSON.stringify({ clientId: SEEDED_CLIENT_ID, log: 'info' }, null, 2)}\n`,
   );
   const config = loadConfig({ env: { TML_DATA_DIR: dataDir } });
   logger = createLogger({ level: 'silent' });
@@ -85,25 +85,28 @@ after(async () => {
 test('PATCH /api/config persists host, port and log level and applies the level live', async () => {
   const res = await request(port, '/api/config', {
     method: 'PATCH',
-    body: { server: { host: '0.0.0.0', port: 9620 }, log: { level: 'error' } },
+    body: { host: '0.0.0.0', port: 9620, log: 'error' },
   });
   assert.equal(res.status, 200);
   assert.equal(res.json.saved, true);
-  assert.deepEqual(res.json.changed, ['server.host', 'server.port', 'log.level']);
+  assert.deepEqual(res.json.changed, ['host', 'port', 'log']);
   assert.deepEqual(res.json.restartRequired, ['server']);
-  assert.deepEqual(res.json.config.server, { host: '0.0.0.0', port: 9620 });
-  assert.equal(res.json.config.log.level, 'error');
+  assert.equal(res.json.config.host, '0.0.0.0');
+  assert.equal(res.json.config.port, 9620);
+  assert.equal(res.json.config.log, 'error');
 
   const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
-  assert.equal(persisted.server.host, '0.0.0.0');
-  assert.equal(persisted.server.port, 9620);
-  assert.equal(persisted.log.level, 'error');
-  assert.equal(persisted.auth.clientId, SEEDED_CLIENT_ID, 'unrelated config keys must survive');
+  assert.equal(persisted.host, '0.0.0.0');
+  assert.equal(persisted.port, 9620);
+  assert.equal(persisted.log, 'error');
+  assert.equal(persisted.clientId, SEEDED_CLIENT_ID, 'unrelated config keys must survive');
+  assert.ok(!('server' in persisted) && !('auth' in persisted), 'the flat file stays flat');
 
   const view = await request(port, '/api/config');
   assert.equal(view.status, 200);
-  assert.deepEqual(view.json.server, { host: '0.0.0.0', port: 9620 });
-  assert.equal(view.json.log.level, 'error');
+  assert.equal(view.json.host, '0.0.0.0');
+  assert.equal(view.json.port, 9620);
+  assert.equal(view.json.log, 'error');
   assert.equal(view.text.includes(SEEDED_CLIENT_ID), false, 'public config must not leak the client id');
 
   assert.equal(logger.level, 'error', 'the log level must apply without a restart');
@@ -111,10 +114,10 @@ test('PATCH /api/config persists host, port and log level and applies the level 
 
 test('PATCH /api/config rejects invalid values without touching the config', async () => {
   const cases = [
-    [{ server: { port: 70000 } }, 'INVALID_PORT'],
-    [{ server: { port: 'not-a-port' } }, 'INVALID_PORT'],
-    [{ server: { host: '   ' } }, 'INVALID_HOST'],
-    [{ log: { level: 'loud' } }, 'INVALID_LOG_LEVEL'],
+    [{ port: 70000 }, 'INVALID_PORT'],
+    [{ port: 'not-a-port' }, 'INVALID_PORT'],
+    [{ host: '   ' }, 'INVALID_HOST'],
+    [{ log: 'loud' }, 'INVALID_LOG_LEVEL'],
     [{ window: { platform: 'wayland' } }, 'CONFIG_PATCH_EMPTY'],
     [{}, 'CONFIG_PATCH_EMPTY'],
   ];
@@ -125,8 +128,8 @@ test('PATCH /api/config rejects invalid values without touching the config', asy
   }
 
   const view = await request(port, '/api/config');
-  assert.deepEqual(view.json.server, { host: '0.0.0.0', port: 9620 }, 'a rejected patch must not change anything');
-  assert.equal(view.json.log.level, 'error');
+  assert.equal(view.json.host, '0.0.0.0', 'a rejected patch must not change anything');
+  assert.equal(view.json.log, 'error');
 });
 
 test('values provided via environment variables cannot be overwritten through PATCH /api/config', async () => {
@@ -149,9 +152,9 @@ test('values provided via environment variables cannot be overwritten through PA
   try {
     const envPort = envServer.address().port;
     for (const body of [
-      { server: { host: '1.2.3.4' } },
-      { server: { port: 1234 } },
-      { log: { level: 'debug' } },
+      { host: '1.2.3.4' },
+      { port: 1234 },
+      { log: 'debug' },
     ]) {
       const res = await request(envPort, '/api/config', { method: 'PATCH', body });
       assert.equal(res.status, 409, `expected 409 for ${JSON.stringify(body)}`);
@@ -251,40 +254,40 @@ test('PATCH /api/instances/:id validates the patch shape and fields', async () =
 test('PATCH /api/config manages the offline player name', async () => {
   const set = await request(port, '/api/config', {
     method: 'PATCH',
-    body: { auth: { offlineName: 'Steve_' } },
+    body: { offlineName: 'Steve_' },
   });
   assert.equal(set.status, 200);
-  assert.ok(set.json.changed.includes('auth.offlineName'));
-  assert.equal(set.json.config.auth.offlineName, 'Steve_');
+  assert.ok(set.json.changed.includes('offlineName'));
+  assert.equal(set.json.config.offlineName, 'Steve_');
   assert.deepEqual(set.json.restartRequired, [], 'an offline name applies without a restart');
 
   const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
-  assert.equal(persisted.auth.offlineName, 'Steve_');
-  assert.equal(persisted.auth.clientId, SEEDED_CLIENT_ID, 'unrelated auth keys must survive');
+  assert.equal(persisted.offlineName, 'Steve_');
+  assert.equal(persisted.clientId, SEEDED_CLIENT_ID, 'unrelated config keys must survive');
 
   const view = await request(port, '/api/config');
-  assert.equal(view.json.auth.offlineName, 'Steve_');
+  assert.equal(view.json.offlineName, 'Steve_');
 
   for (const bad of ['ab', 'x'.repeat(17), 'bad name', 'name!', 123]) {
     const res = await request(port, '/api/config', {
       method: 'PATCH',
-      body: { auth: { offlineName: bad } },
+      body: { offlineName: bad },
     });
     assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(bad)}`);
     assert.equal(res.json.error.code, 'INVALID_OFFLINE_NAME');
   }
   const still = await request(port, '/api/config');
-  assert.equal(still.json.auth.offlineName, 'Steve_', 'a rejected patch must not change the name');
+  assert.equal(still.json.offlineName, 'Steve_', 'a rejected patch must not change the name');
 
   const reset = await request(port, '/api/config', {
     method: 'PATCH',
-    body: { auth: { offlineName: null } },
+    body: { offlineName: null },
   });
   assert.equal(reset.status, 200);
-  assert.ok(reset.json.changed.includes('auth.offlineName'));
-  assert.equal(reset.json.config.auth.offlineName, null);
+  assert.ok(reset.json.changed.includes('offlineName'));
+  assert.equal(reset.json.config.offlineName, null);
   const after = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
-  assert.equal('offlineName' in after.auth, false, 'resetting removes the persisted key');
-  assert.equal(after.auth.clientId, SEEDED_CLIENT_ID, 'unrelated auth keys must survive the reset');
+  assert.equal('offlineName' in after, false, 'resetting removes the persisted key');
+  assert.equal(after.clientId, SEEDED_CLIENT_ID, 'unrelated config keys must survive the reset');
 });
 

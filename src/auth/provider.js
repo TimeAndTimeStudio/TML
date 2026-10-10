@@ -21,7 +21,7 @@ export function createAuthProvider({
   function requireClient() {
     if (!client) {
       throw new AuthError(
-        'Microsoft sign-in has no client id — set TML_MSA_CLIENT_ID or auth.clientId in config.json',
+        'Microsoft sign-in has no client id — set TML_MSA_CLIENT_ID or clientId in config.json',
         { code: 'AUTH_CLIENT_NOT_CONFIGURED', status: 503, details: { stage: 'config' } },
       );
     }

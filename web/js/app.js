@@ -192,7 +192,7 @@ function renderConfig() {
   if (!config) return;
 
   el.versionPill.textContent = `v${config.version}`;
-  el.factEndpoint.textContent = `http://${config.server.host}:${config.server.port}`;
+  el.factEndpoint.textContent = `http://${config.host}:${config.port}`;
 
   const values = {
     version: config.version,
@@ -207,10 +207,10 @@ function renderConfig() {
     if (cell) cell.textContent = String(value);
   }
 
-  fillIfIdle(document.getElementById('cfgHost'), config.server.host);
-  fillIfIdle(document.getElementById('cfgPort'), config.server.port);
-  fillIfIdle(document.getElementById('cfgOfflineName'), config.auth?.offlineName ?? '');
-  if (fillIfIdle(document.getElementById('cfgLogLevel'), config.log.level)) {
+  fillIfIdle(document.getElementById('cfgHost'), config.host);
+  fillIfIdle(document.getElementById('cfgPort'), config.port);
+  fillIfIdle(document.getElementById('cfgOfflineName'), config.offlineName ?? '');
+  if (fillIfIdle(document.getElementById('cfgLogLevel'), config.log)) {
     settingsDropdowns.logLevel?.reset();
   }
 
@@ -946,7 +946,7 @@ async function loadInstanceDetail(id) {
 // แสดง java ที่เลือกไว้ใน Settings (instance.java เป็น 'minecraft-bundled' ตลอด → ไม่บอกอะไร)
 // คืน null เมื่อยังไม่ได้เลือก
 function selectedJavaLabel() {
-  const chosen = state.config?.java?.runtime ?? null;
+  const chosen = state.config?.java ?? null;
   if (!chosen) return null;
   const runtime = javaRuntimeState.list.find((entry) => entry.name === chosen) ?? null;
   if (runtime) return `Java ${runtime.major ?? runtime.javaVersion} (${chosen})`;
@@ -2926,7 +2926,6 @@ async function startAuth() {
     const target = device.verificationUriComplete
       ?? device.verificationUri
       ?? 'https://microsoft.com/link';
-    link.href = target;
     link.textContent = (device.verificationUri ?? 'https://microsoft.com/link').replace(/^https?:\/\//, '');
     if (await copyUserCode(device.userCode)) {
       toast('Sign-in code copied to clipboard');
@@ -3406,7 +3405,7 @@ function setupOfflineNameForm() {
     errorBox.hidden = true;
     const value = input.value.trim();
     try {
-      const result = await patchJson('/api/config', { auth: { offlineName: value === '' ? null : value } });
+      const result = await patchJson('/api/config', { offlineName: value === '' ? null : value });
       delete input.dataset.dirty;
       if (result.saved) {
         toast(value ? `Offline name set to ${value}` : 'Offline name reset to Player');
@@ -3447,11 +3446,9 @@ function setupServerConfigForm() {
     errorBox.hidden = true;
     try {
       const result = await patchJson('/api/config', {
-        server: {
-          host: document.getElementById('cfgHost').value.trim(),
-          port: document.getElementById('cfgPort').value.trim(),
-        },
-        log: { level: document.getElementById('cfgLogLevel').value },
+        host: document.getElementById('cfgHost').value.trim(),
+        port: document.getElementById('cfgPort').value.trim(),
+        log: document.getElementById('cfgLogLevel').value,
       });
       if (result.saved) {
         clearDirty();
@@ -3777,7 +3774,7 @@ function setupJavaRuntimeCard() {
 
     if (mode === 'select') {
       try {
-        await patchJson('/api/config', { java: { runtime: name } });
+        await patchJson('/api/config', { java: name });
         javaRuntimeState.chosen = name;
         await refresh();
         toast(`Java runtime set to ${name}`);
