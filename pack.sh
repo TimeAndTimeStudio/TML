@@ -9,7 +9,8 @@
 #   ./pack.sh                       -> dist/tml-<version>/  (+ .tar.gz)
 #
 # Bundle layout (flat — the app binary sits next to run-tml.sh):
-#   run-tml.sh  tml  content_shell.pak  tml_resources/  locales/ ...
+#   run-tml.sh  tml  content_shell.pak  ...   (no tml_resources: the
+#   startup is a URL, so there is no packaged page and no locales)
 #   src/  web/  package.json  TML.desktop  favicon.svg
 #
 # Requirements on the target machine: node, curl, a Wayland session,

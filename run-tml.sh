@@ -7,7 +7,9 @@
 # Bundle layout only: this script sits next to the `tml` binary (dist/).
 #
 #   ./run-tml.sh                 start server + app (server first, waits for health)
-#   ./run-tml.sh --window-size=1280x800    extra args go to the app
+#
+# TML takes no command-line argument of its own -- it refuses any you pass
+# and exits, so this script passes none through.
 #
 # Closing the app window stops the server again — but only the server this
 # script started; one that was already running is left alone.
@@ -60,5 +62,5 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-"$APP" "$@"
+"$APP"
 # The window closed → falls through → the trap stops the server we started.
