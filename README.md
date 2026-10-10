@@ -57,8 +57,7 @@ malformed JSON, non-GUID client ID) fail startup immediately with `ConfigError`.
 ```json
 {
   "server": { "host": "127.0.0.1", "port": 8620 },
-  "log": { "level": "warn" },
-  "window": { "platform": "auto" }
+  "log": { "level": "warn" }
 }
 ```
 
@@ -66,7 +65,6 @@ malformed JSON, non-GUID client ID) fail startup immediately with `ConfigError`.
 | --- | --- |
 | `server.host`, `server.port` | Bind address — requires a restart |
 | `log.level` | Applied immediately (also editable in the UI) |
-| `window.platform` | `auto` (system default) or `wayland` (native Wayland only) — applies to the next launch |
 | `auth.clientId` | Overrides `TML_MSA_CLIENT_ID` |
 | `auth.offlineName` | Player name used when no Microsoft session exists |
 | `java.runtime` | Selected runtime name, or omitted for automatic selection |
@@ -101,7 +99,8 @@ All endpoints live under `/api`:
 | `GET` | `/api/java/runtimes/:name/progress` | Download progress |
 | `DELETE` | `/api/java/runtimes/:name` | Delete a downloaded runtime |
 | `GET` / `POST` / `DELETE` | `/api/minecraft/skin[...]` | Current skin (masked) / upload / reset |
-| `GET` | `/api/routes`, `/api/sources` | Route table and data-source allowlist |
+| `GET` | `/api/sources` | The network allowlist as JSON (`version`, `rules`, `sources`) — see Network access |
+| `GET` | `/api/routes` | Route table (every method + path the API serves) |
 
 Errors are `4xx/5xx` with a machine-readable `code` field (for example
 `INVALID_LOG_LEVEL`, `INSTANCE_RUNNING`, `JAVA_RUNTIME_UNAVAILABLE`).
@@ -113,8 +112,31 @@ Every remote host TML may reach is fixed by the allowlist in
 and each group is contacted only when its feature runs. The UI itself talks
 only to `127.0.0.1` (its one remote image source is Modrinth icons, pinned by
 the page's `Content-Security-Policy`). There is no telemetry or analytics of
-any kind. The same list is served at `GET /api/sources` and shown in
-**Settings → Network access**.
+any kind.
+
+`GET /api/sources` serves this allowlist as JSON so you can see what TML may
+reach without reading the source — that is why the endpoint exists, and why
+the **Settings → Network access** card can render it live:
+
+```json
+{
+  "version": "0.1.1",
+  "rules": {
+    "protocols": ["http:", "https:"],
+    "defaultPortOnly": true,
+    "credentialsNotAllowed": true,
+    "categoryScoped": true
+  },
+  "sources": [
+    { "id": "minecraft", "label": "Official Minecraft / Mojang",
+      "hosts": ["piston-meta.mojang.com", "…"] }
+  ]
+}
+```
+
+`rules` states the constraints enforced alongside the host list: only
+`http:`/`https:`, default ports only, no credentials embedded in URLs, and
+each group scoped to its own source.
 
 | Group | Hosts | Used for |
 | --- | --- | --- |
@@ -125,8 +147,11 @@ any kind. The same list is served at `GET /api/sources` and shown in
 
 Also:
 
-- `microsoft.com/link` — not fetched by TML; you open it yourself to approve
-  the sign-in (the UI links to it).
+- `microsoft.com/link` — never fetched by TML; when you start signing in, the
+  UI opens it in **a new TML window** (never an external browser) and copies
+  the user code to your clipboard — Microsoft's page does not accept a code in
+  the URL (it returns no `verification_uri_complete`), so paste it there.
+  Clicking the link in the modal works as a fallback.
 - `textures.minecraft.net` — never contacted; skins are read from the local
   cache only.
 - `account.mojang.com` — never contacted; appears only as a comment inside a
@@ -137,10 +162,11 @@ Also:
 ## Platform notes
 
 - **Linux only.** `assertLinuxPlatform()` exits on any other OS.
-- **Game window platform** (`window.platform`): `auto` follows the desktop
-  session; `wayland` removes `DISPLAY` so the game cannot fall back to
-  XWayland. On GNOME, Wayland windows get no server-side decorations — the
-  game draws its own title bar. Applies to the next launch.
+- **Wayland only.** The game always launches with a Wayland-only environment
+  (`DISPLAY` is removed so it cannot fall back to XWayland), and the TML window
+  itself is Wayland-only (`run-tml.sh` refuses to start without
+  `WAYLAND_DISPLAY`). On GNOME, Wayland windows get no server-side decorations —
+  the game draws its own title bar.
 - **Microsoft client ID.** The default is a public Azure application
   identifier, not a secret; replace it with `TML_MSA_CLIENT_ID` if preferred.
 - **Credentials.** `auth-session.json` is stored with mode `0600`; tokens are

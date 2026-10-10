@@ -79,6 +79,17 @@ body {
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
+  /* ทั้งเว็บ: ปิด copy + ลากครอบ text — เอาโค้ดด้วยปุ่ม COPY แทน */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ช่องพิมพ์ยังเลือก/แก้ไขข้อความได้ตามปกติ */
+input,
+textarea,
+select {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 code {
@@ -1298,6 +1309,18 @@ input[type="file"]:focus {
   color: var(--accent-2);
 }
 
+/* โค้ดอยู่บน ปุ่ม COPY ด้านล่างเต็มความกว้าง */
+.auth-code-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.auth-code-row .auth-code {
+  margin: 0;
+}
+
 .auth-waiting {
   color: var(--warn);
   animation: auth-pulse 1.6s ease-in-out infinite;
@@ -1813,6 +1836,10 @@ input[type="file"]:focus {
   font-family: var(--mono);
   word-break: break-all;
 }
+/* เลือกไฟล์–ชื่อไฟล์–ปุ่มอัปโหลด อยู่แถวเดียวกัน (อัปโหลดชิดขวา รอจนเลือกไฟล์ก่อนจึงกดได้) */
+.skin-file-row #skinUploadBtn {
+  margin-left: auto;
+}
 .skin-overlay .field {
   margin-top: 12px;
 }
@@ -1821,6 +1848,12 @@ input[type="file"]:focus {
 }
 .skin-overlay .import-error {
   margin-top: 10px;
+  color: var(--danger);
+  opacity: 0.9;
+}
+/* RESET แยกไปซ้ายคนละฝั่งกับ CLOSE — ปุ่มทำลายข้อมูลไม่ยืนข้างปุ่มหลัก */
+.skin-overlay .skin-actions #skinResetBtn {
+  margin-right: auto;
 }
 
 /* ---------- Server (START tab): console + EULA banner ---------- */

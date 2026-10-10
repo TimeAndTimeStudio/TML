@@ -213,9 +213,6 @@ function renderConfig() {
   if (fillIfIdle(document.getElementById('cfgLogLevel'), config.log.level)) {
     settingsDropdowns.logLevel?.reset();
   }
-  if (fillIfIdle(document.getElementById('cfgWindow'), config.window?.platform ?? 'auto')) {
-    settingsDropdowns.windowPlatform?.reset();
-  }
 
   // banner หลังเปลี่ยน data dir — ขึ้นจนกว่า backend จะ restart (pendingDataDir ≠ dataDir จริง)
   const pendingDataDir = config.pendingDataDir ?? null;
@@ -2775,10 +2772,10 @@ function setupCreatePage() {
 
 // ---------- Microsoft account + Modrinth search ----------
 
-const authState = { device: null, controller: null };
+const authState = { device: null, controller: null, linkWindow: null };
 const catalogState = { minecraft: false, fabric: false };
 const createDropdowns = { mc: null, fabric: null };
-const settingsDropdowns = { logLevel: null, windowPlatform: null };
+const settingsDropdowns = { logLevel: null };
 let updatesVersionDropdown = null;
 const javaRuntimeState = { loaded: false, failed: false, list: [], chosen: null };
 let javaRtDropdown = null;
@@ -2878,7 +2875,41 @@ function closeAuthModal() {
   authState.device = null;
   authState.controller?.abort();
   authState.controller = null;
+  closeAuthLinkWindow();
   authModal().hidden = true;
+}
+
+function closeAuthLinkWindow() {
+  try {
+    authState.linkWindow?.close();
+  } catch {
+    // หน้าต่างถูกปิดไปแล้ว
+  }
+  authState.linkWindow = null;
+}
+
+// คัดลอกโค้ดเข้า clipboard ของระบบ — ทำก่อน window.open เพราะหลังเปิด
+// หน้าต่างใหม่ document นี้เสียโฟกัสแล้ว Clipboard API จะถูกปฏิเสธ
+async function copyUserCode(code) {
+  try {
+    await navigator.clipboard.writeText(code);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = code;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
 }
 
 async function startAuth() {
@@ -2892,8 +2923,15 @@ async function startAuth() {
     authState.device = device;
     document.getElementById('authUserCode').textContent = device.userCode;
     const link = document.getElementById('authLink');
-    link.href = device.verificationUri ?? 'https://microsoft.com/link';
+    const target = device.verificationUriComplete
+      ?? device.verificationUri
+      ?? 'https://microsoft.com/link';
+    link.href = target;
     link.textContent = (device.verificationUri ?? 'https://microsoft.com/link').replace(/^https?:\/\//, '');
+    if (await copyUserCode(device.userCode)) {
+      toast('Sign-in code copied to clipboard');
+    }
+    authState.linkWindow = window.open(target, '_blank');
     document.getElementById('authMessage').textContent = device.message ?? '';
     document.getElementById('authCodeStep').hidden = false;
     document.getElementById('authWaiting').hidden = false;
@@ -2923,6 +2961,7 @@ async function pollAuth(device) {
       });
       authState.device = null;
       authState.controller = null;
+      closeAuthLinkWindow();
       renderSession(result.session);
       renderAuthModal(result.session);
       toast(`Signed in as ${result.session.username}`);
@@ -2990,6 +3029,8 @@ function previewSkinFile(file) {
   skinOverlayState.source = 'file';
   skinOverlayState.name = file.name;
   setSkinFileName(file.name);
+  const uploadBtn = document.getElementById('skinUploadBtn');
+  if (uploadBtn) uploadBtn.disabled = false;
   renderSkinOverlayMeta(
     `${file.name} chosen — preview always shows the skin in use · press UPLOAD SKIN to apply it`,
   );
@@ -3206,6 +3247,10 @@ async function openSkinOverlay() {
   skinOverlayState.image = null;
   skinOverlayState.placeholder = 'No skin preview';
   setSkinFileName('No file chosen');
+  const input = skinFile();
+  if (input) input.value = '';
+  const uploadBtn = document.getElementById('skinUploadBtn');
+  if (uploadBtn) uploadBtn.disabled = true;
   modal.hidden = false;
   await loadActiveSkin();
 }
@@ -3257,6 +3302,10 @@ async function resetSkin() {
     await deleteJson('/api/minecraft/skin');
     toast('Skin reset to default');
     setSkinFileName('No file chosen');
+    const input = skinFile();
+    if (input) input.value = '';
+    const uploadBtn = document.getElementById('skinUploadBtn');
+    if (uploadBtn) uploadBtn.disabled = true;
     await loadActiveSkin();
   } catch (err) {
     showAuthError(err.message, 'skinError');
@@ -3309,11 +3358,27 @@ function setupAuth() {
   el.accountPill?.addEventListener('click', openAuthModal);
   document.getElementById('accountsNavBtn')?.addEventListener('click', openAuthModal);
   document.getElementById('authStartBtn')?.addEventListener('click', startAuth);
+  document.getElementById('authCopyBtn')?.addEventListener('click', async () => {
+    const code = authState.device?.userCode;
+    if (!code) return;
+    const btn = document.getElementById('authCopyBtn');
+    if (await copyUserCode(code)) {
+      toast('Sign-in code copied to clipboard');
+      if (btn) {
+        btn.textContent = 'COPIED';
+        setTimeout(() => {
+          btn.textContent = 'COPY';
+        }, 1500);
+      }
+    } else {
+      toast('Copy failed — select the code and copy it manually');
+    }
+  });
   document.getElementById('authCancelBtn')?.addEventListener('click', () => {
     if (authState.device) {
-      authState.device = null;
       authState.controller?.abort();
-      resetWaitingUi();
+      closeAuthLinkWindow();
+      resetAuthStartUi();
     } else {
       closeAuthModal();
     }
@@ -3363,20 +3428,15 @@ function setupServerConfigForm() {
 
   settingsDropdowns.logLevel = createDropdown({ containerId: 'cfgLogLevelDropdown', valueId: 'cfgLogLevel' });
   settingsDropdowns.logLevel?.setOptions(['debug', 'info', 'warn', 'error', 'silent']);
-  settingsDropdowns.windowPlatform = createDropdown({ containerId: 'cfgWindowDropdown', valueId: 'cfgWindow' });
-  settingsDropdowns.windowPlatform?.setOptions([
-    { value: 'auto', label: 'System (auto)' },
-    { value: 'wayland', label: 'Wayland only' },
-  ]);
 
-  for (const id of ['cfgHost', 'cfgPort', 'cfgLogLevel', 'cfgWindow']) {
+  for (const id of ['cfgHost', 'cfgPort', 'cfgLogLevel']) {
     document.getElementById(id)?.addEventListener('input', (event) => {
       event.currentTarget.dataset.dirty = '1';
     });
   }
 
   const clearDirty = () => {
-    for (const id of ['cfgHost', 'cfgPort', 'cfgLogLevel', 'cfgWindow']) {
+    for (const id of ['cfgHost', 'cfgPort', 'cfgLogLevel']) {
       const input = document.getElementById(id);
       if (input) delete input.dataset.dirty;
     }
@@ -3392,7 +3452,6 @@ function setupServerConfigForm() {
           port: document.getElementById('cfgPort').value.trim(),
         },
         log: { level: document.getElementById('cfgLogLevel').value },
-        window: { platform: document.getElementById('cfgWindow').value },
       });
       if (result.saved) {
         clearDirty();

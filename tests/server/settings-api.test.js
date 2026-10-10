@@ -115,7 +115,7 @@ test('PATCH /api/config rejects invalid values without touching the config', asy
     [{ server: { port: 'not-a-port' } }, 'INVALID_PORT'],
     [{ server: { host: '   ' } }, 'INVALID_HOST'],
     [{ log: { level: 'loud' } }, 'INVALID_LOG_LEVEL'],
-    [{ window: { platform: 'x11' } }, 'INVALID_WINDOW_PLATFORM'],
+    [{ window: { platform: 'wayland' } }, 'CONFIG_PATCH_EMPTY'],
     [{}, 'CONFIG_PATCH_EMPTY'],
   ];
   for (const [body, code] of cases) {
@@ -127,40 +127,6 @@ test('PATCH /api/config rejects invalid values without touching the config', asy
   const view = await request(port, '/api/config');
   assert.deepEqual(view.json.server, { host: '0.0.0.0', port: 9620 }, 'a rejected patch must not change anything');
   assert.equal(view.json.log.level, 'error');
-});
-
-test('PATCH /api/config manages the game window platform', async () => {
-  const set = await request(port, '/api/config', {
-    method: 'PATCH',
-    body: { window: { platform: 'wayland' } },
-  });
-  assert.equal(set.status, 200);
-  assert.equal(set.json.saved, true);
-  assert.deepEqual(set.json.changed, ['window.platform']);
-  assert.deepEqual(set.json.restartRequired, [], 'the platform applies to the next launch, not to the server');
-  assert.equal(set.json.config.window.platform, 'wayland');
-
-  const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
-  assert.equal(persisted.window.platform, 'wayland');
-  assert.equal(persisted.auth.clientId, SEEDED_CLIENT_ID, 'unrelated config keys must survive');
-
-  const view = await request(port, '/api/config');
-  assert.equal(view.json.window.platform, 'wayland');
-
-  const again = await request(port, '/api/config', {
-    method: 'PATCH',
-    body: { window: { platform: 'wayland' } },
-  });
-  assert.equal(again.status, 200);
-  assert.equal(again.json.saved, false, 'patching the same value must be a no-op');
-  assert.deepEqual(again.json.changed, []);
-
-  const reset = await request(port, '/api/config', {
-    method: 'PATCH',
-    body: { window: { platform: null } },
-  });
-  assert.equal(reset.status, 200);
-  assert.equal(reset.json.config.window.platform, 'auto');
 });
 
 test('values provided via environment variables cannot be overwritten through PATCH /api/config', async () => {

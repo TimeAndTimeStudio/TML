@@ -150,17 +150,15 @@ function captureOutput(child, output, onOutput) {
   }
 }
 
-// สร้าง env ของกระบวนการเกม: 'wayland' = บังคับ Wayland native เท่านั้น — ตัดทาง X11/XWayland
-// ทิ้ง (ลบ DISPLAY) + บังคับ SDL ไม่ให้ probe กลับไป x11 ด้วย SDL_VIDEO_DRIVER (ตัว override ที่ SDL
+// สร้าง env ของกระบวนการเกม: บังคับ Wayland native เท่านั้น — ตัดทาง X11/XWayland ทิ้ง
+// (ลบ DISPLAY) + บังคับ SDL ไม่ให้ probe กลับไป x11 ด้วย SDL_VIDEO_DRIVER (ตัว override ที่ SDL
 // ระบุใน message ของมันเอง) + ค่า SDL_VIDEODRIVER (ชื่อ legacy) + XDG_SESSION_TYPE ให้ตรงกับความจริง
-export function buildProcessEnv(platform, baseEnv = process.env, overrides = {}) {
+export function buildProcessEnv(baseEnv = process.env, overrides = {}) {
   const env = { ...baseEnv, ...overrides };
-  if (platform === 'wayland') {
-    delete env.DISPLAY;
-    env.XDG_SESSION_TYPE = 'wayland';
-    env.SDL_VIDEO_DRIVER = 'wayland';
-    env.SDL_VIDEODRIVER = 'wayland';
-  }
+  delete env.DISPLAY;
+  env.XDG_SESSION_TYPE = 'wayland';
+  env.SDL_VIDEO_DRIVER = 'wayland';
+  env.SDL_VIDEODRIVER = 'wayland';
   return env;
 }
 
@@ -374,7 +372,7 @@ export function createLauncher(options = {}) {
     const envOverrides = opts.env && typeof opts.env === 'object' ? opts.env : {};
     const child = spawn(launchPlan.java.path, launchPlan.args, {
       cwd: launchPlan.gameDir,
-      env: buildProcessEnv(opts.windowPlatform, process.env, envOverrides),
+      env: buildProcessEnv(process.env, envOverrides),
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
       detached: false,

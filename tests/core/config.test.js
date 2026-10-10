@@ -26,7 +26,7 @@ test('loadConfig uses defaults', () => {
     assert.equal(config.server.host, '127.0.0.1');
     assert.equal(config.server.port, 8620);
     assert.equal(config.log.level, 'warn');
-    assert.equal(config.window.platform, 'auto');
+    assert.ok(!('window' in config), 'the game window setting is gone — the game is always Wayland-only');
     assert.equal(config.phase, undefined);
     assert.equal(config.paths.webDir, path.join(config.projectRoot, 'web'));
     assert.ok(config.paths.instancesDir.startsWith(dir));
@@ -95,7 +95,7 @@ test('publicConfig exposes only the safe subset', () => {
     assert.ok(!('file' in view.log));
     assert.ok(!('projectRoot' in view));
     assert.equal(view.paths.exportsDir, config.paths.exportsDir, 'exportsDir is public so the export modal can default to it');
-    assert.equal(view.window.platform, 'auto');
+    assert.ok(!('window' in view));
     assert.ok(!json.includes('configFile'));
     assert.ok(!/token|password|secret/i.test(json));
   } finally {
@@ -145,29 +145,17 @@ test('invalid Microsoft app client ids raise ConfigError', () => {
   }
 });
 
-// ตัวเลือก platform ของหน้าต่างเกม: 'auto' = ตาม session, 'wayland' = บังคับ Wayland เท่านั้น (x11 ถูกถอดออก)
-test('window.platform defaults to auto, reads wayland from the file, maps legacy x11 and rejects unknown values', () => {
+test('a legacy window.platform key in config.json is ignored', () => {
   const dir = tmpDir();
   try {
-    assert.equal(loadConfig({ env: { TML_DATA_DIR: dir } }).window.platform, 'auto');
+    assert.ok(!('window' in loadConfig({ env: { TML_DATA_DIR: dir } })));
 
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ window: { platform: 'wayland' } }));
-    const fromFile = loadConfig({ env: { TML_DATA_DIR: dir } });
-    assert.equal(fromFile.window.platform, 'wayland');
-    assert.equal(publicConfig(fromFile).window.platform, 'wayland');
-
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ window: { platform: 'x11' } }));
-    assert.equal(
-      loadConfig({ env: { TML_DATA_DIR: dir } }).window.platform,
-      'auto',
-      'legacy x11 from an old config must fall back to auto',
-    );
-
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ window: { platform: 'mir' } }));
-    assert.throws(() => loadConfig({ env: { TML_DATA_DIR: dir } }), ConfigError);
-
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ window: { platform: 'auto' } }));
-    assert.equal(loadConfig({ env: { TML_DATA_DIR: dir } }).window.platform, 'auto');
+    for (const platform of ['wayland', 'auto', 'x11', 'mir']) {
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ window: { platform } }));
+      const config = loadConfig({ env: { TML_DATA_DIR: dir } });
+      assert.ok(!('window' in config), `window.platform=${platform} must be ignored, not an error`);
+      assert.ok(!('window' in publicConfig(config)), 'the public view must not resurface it either');
+    }
   } finally {
     cleanup(dir);
   }

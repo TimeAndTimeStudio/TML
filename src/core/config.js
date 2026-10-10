@@ -194,23 +194,6 @@ function normalizeJavaRuntime(value) {
   return value;
 }
 
-// ตัวเลือก platform ของหน้าต่างเกม: 'auto' = ตาม session, 'wayland' = บังคับ Wayland native
-// เท่านั้น (ไม่มี XWayland แล้ว — ตัวเลือกเก่า 'x11' ถูกถอดออก และ config เดิมจะถูกแปลงเป็น 'auto')
-export const WINDOW_PLATFORM_VALUES = Object.freeze(['auto', 'wayland']);
-export const DEFAULT_WINDOW_PLATFORM = 'auto';
-
-function normalizeWindowPlatform(value) {
-  const platform = typeof value === 'string' ? value.trim().toLowerCase() : value;
-  if (platform === undefined || platform === null || platform === '') return DEFAULT_WINDOW_PLATFORM;
-  if (platform === 'x11') return DEFAULT_WINDOW_PLATFORM;
-  if (!WINDOW_PLATFORM_VALUES.includes(platform)) {
-    throw new ConfigError(
-      `window.platform must be one of: ${WINDOW_PLATFORM_VALUES.join(', ')} (got ${JSON.stringify(value)})`,
-    );
-  }
-  return platform;
-}
-
 export const OFFLINE_NAME_PATTERN = /^[A-Za-z0-9_]{3,16}$/;
 
 function normalizeOfflineName(value) {
@@ -244,14 +227,12 @@ export function loadConfig({ env = process.env } = {}) {
   const fileLog = isPlainObject(file.log) ? file.log : {};
   const fileAuth = isPlainObject(file.auth) ? file.auth : {};
   const fileJava = isPlainObject(file.java) ? file.java : {};
-  const fileWindow = isPlainObject(file.window) ? file.window : {};
 
   const host = normalizeHost(env.TML_HOST ?? fileServer.host ?? DEFAULTS.host);
   const port = normalizePort(env.TML_PORT ?? fileServer.port ?? DEFAULTS.port);
   const level = normalizeLevel(env.TML_LOG_LEVEL ?? fileLog.level ?? DEFAULTS.logLevel);
   const javaRuntime = normalizeJavaRuntime(fileJava.runtime);
   const offlineName = normalizeOfflineName(fileAuth.offlineName);
-  const windowPlatform = normalizeWindowPlatform(fileWindow.platform);
 
   let authClientId = DEFAULT_MSA_CLIENT_ID;
   let authSource = 'default';
@@ -293,7 +274,6 @@ export function loadConfig({ env = process.env } = {}) {
     },
     auth: { clientId: authClientId, source: authSource, offlineName },
     java: { runtime: javaRuntime },
-    window: { platform: windowPlatform },
   };
 
   return Object.freeze(config);
@@ -324,6 +304,5 @@ export function publicConfig(config) {
       offlineName: config.auth?.offlineName ?? null,
     },
     java: { runtime: config.java?.runtime ?? null },
-    window: { platform: config.window?.platform ?? DEFAULT_WINDOW_PLATFORM },
   };
 }

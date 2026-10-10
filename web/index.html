@@ -426,28 +426,6 @@
                 </div>
                 <input type="hidden" id="cfgLogLevel" value="info" />
               </div>
-              <div class="field">
-                <span class="field-label">Game window platform</span>
-                <div class="dropdown" id="cfgWindowDropdown">
-                  <button type="button" class="dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">
-                    <span class="dropdown-value">System (auto)</span>
-                  </button>
-                  <div class="dropdown-menu" hidden>
-                    <ul class="dropdown-list" role="listbox"></ul>
-                    <p class="dropdown-empty muted small">No entries</p>
-                  </div>
-                </div>
-                <input type="hidden" id="cfgWindow" value="auto" />
-                <p class="muted small" id="cfgWindowHelp">
-                  Applies from the next PLAY.
-                  <strong>System (auto)</strong> follows the desktop session.
-                  <strong>Wayland only</strong> forces native Wayland and disables any X11/XWayland
-                  fallback. On GNOME, mutter never draws decorations for Wayland windows (no
-                  xdg-decoration support), so the title bar is drawn by the game itself (libdecor):
-                  its buttons and theme do not match GNOME and there is no system window menu —
-                  but the image stays sharp at fractional scaling.
-                </p>
-              </div>
               <button class="btn btn-primary" type="submit">SAVE</button>
             </form>
             <p class="muted small import-error" id="serverConfigError" hidden></p>
@@ -697,10 +675,15 @@
       <div id="authSignedOut" hidden>
 
         <div id="authCodeStep" hidden>
-          <div class="auth-code" id="authUserCode">————</div>
+          <div class="auth-code-row">
+            <div class="auth-code" id="authUserCode">————</div>
+            <button class="btn auth-copy-btn" id="authCopyBtn" type="button">COPY</button>
+          </div>
           <p class="muted">
-            Open <a id="authLink" href="https://microsoft.com/link" target="_blank" rel="noopener noreferrer">microsoft.com/link</a>
-            and enter this code
+            A new TML window opens
+            <a id="authLink" href="https://microsoft.com/link" target="_blank" rel="noopener noreferrer">microsoft.com/link</a>
+            — the code is copied to your clipboard, paste it there. If no
+            window appeared, click the link and paste the code:
           </p>
           <p class="small muted" id="authMessage"></p>
           <p class="small auth-waiting" id="authWaiting" hidden>Waiting for approval…</p>
@@ -743,6 +726,7 @@
           <span>CHOOSE FILE</span>
         </button>
         <span class="muted small" id="skinFileName">No file chosen</span>
+        <button class="btn btn-primary" id="skinUploadBtn" type="button" disabled>UPLOAD SKIN</button>
         <input type="file" id="skinOverlayFile" accept="image/png,.png" hidden />
       </div>
 
@@ -762,10 +746,9 @@
 
       <p class="muted small import-error" id="skinError" hidden></p>
 
-      <div class="modal-actions">
-        <button class="btn" id="skinOverlayClose" type="button">CLOSE</button>
+      <div class="modal-actions skin-actions">
         <button class="btn btn-danger" id="skinResetBtn" type="button">RESET TO DEFAULT</button>
-        <button class="btn btn-primary" id="skinUploadBtn" type="button">UPLOAD SKIN</button>
+        <button class="btn" id="skinOverlayClose" type="button">CLOSE</button>
       </div>
     </div>
   </div>

@@ -16,8 +16,6 @@ import {
   writeDataDirPointer,
   VERSION,
   OFFLINE_NAME_PATTERN,
-  WINDOW_PLATFORM_VALUES,
-  DEFAULT_WINDOW_PLATFORM,
 } from '../core/config.js';
 import { findInstanceIcon, isIconFilename, sniffImage, ICON_MAX_BYTES, ICON_MIME } from '../instance/icon.js';
 import { listSources } from '../security/urls.js';
@@ -746,7 +744,6 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
     const auth = (await launchAuth()) ?? offlineAuth();
     const result = await manager.launch(params.id, {
       ...(auth ? { auth } : {}),
-      windowPlatform: getConfig().window?.platform ?? DEFAULT_WINDOW_PLATFORM,
     });
     return {
       status: 202,
@@ -1335,19 +1332,17 @@ export function createApiRouter({
     const logPatch = isPlainObject(patch.log) ? patch.log : null;
     const javaPatch = isPlainObject(patch.java) ? patch.java : null;
     const authPatch = isPlainObject(patch.auth) ? patch.auth : null;
-    const windowPatch = isPlainObject(patch.window) ? patch.window : null;
     const dataDirPatch = patch.dataDir !== undefined && patch.dataDir !== null ? patch.dataDir : null;
-    if (!serverPatch && !logPatch && !javaPatch && !authPatch && !windowPatch && dataDirPatch === null) {
-      throw new ValidationError('Provide a "server", "log", "java", "auth", "window" or "dataDir" field to update', {
+    if (!serverPatch && !logPatch && !javaPatch && !authPatch && dataDirPatch === null) {
+      throw new ValidationError('Provide a "server", "log", "java", "auth" or "dataDir" field to update', {
         code: 'CONFIG_PATCH_EMPTY',
-        details: { fields: ['server', 'log', 'java', 'auth', 'window', 'dataDir'] },
+        details: { fields: ['server', 'log', 'java', 'auth', 'dataDir'] },
       });
     }
 
     const next = { host: liveConfig.server.host, port: liveConfig.server.port, level: liveConfig.log.level };
     let nextJava = liveConfig.java?.runtime ?? null;
     let nextOfflineName = liveConfig.auth?.offlineName ?? null;
-    let nextWindowPlatform = liveConfig.window?.platform ?? DEFAULT_WINDOW_PLATFORM;
     let nextDataDir = null;
     const changedFields = [];
 
@@ -1490,22 +1485,6 @@ export function createApiRouter({
       if (nextOfflineName !== (liveConfig.auth?.offlineName ?? null)) changedFields.push('auth.offlineName');
     }
 
-    // ตัวเลือก platform ของหน้าต่างเกม: 'auto' = ตาม session, 'wayland' = บังคับ Wayland เท่านั้น
-    if (windowPatch && windowPatch.platform !== undefined) {
-      const rawPlatform = windowPatch.platform;
-      const platform = typeof rawPlatform === 'string' ? rawPlatform.trim().toLowerCase() : rawPlatform;
-      if (platform !== null && !WINDOW_PLATFORM_VALUES.includes(platform)) {
-        throw new ValidationError(`Field "window.platform" must be one of: ${WINDOW_PLATFORM_VALUES.join(', ')} or null`, {
-          code: 'INVALID_WINDOW_PLATFORM',
-          details: { field: 'window.platform', known: [...WINDOW_PLATFORM_VALUES] },
-        });
-      }
-      nextWindowPlatform = platform === null ? DEFAULT_WINDOW_PLATFORM : platform;
-      if (nextWindowPlatform !== (liveConfig.window?.platform ?? DEFAULT_WINDOW_PLATFORM)) {
-        changedFields.push('window.platform');
-      }
-    }
-
     if (nextDataDir !== null) changedFields.push('dataDir');
 
     const saved = changedFields.length > 0;
@@ -1520,7 +1499,6 @@ export function createApiRouter({
       server: { ...liveConfig.server, host: next.host, port: next.port },
       log: { ...liveConfig.log, level: next.level },
       java: { ...(liveConfig.java ?? {}), runtime: nextJava },
-      window: { ...(liveConfig.window ?? {}), platform: nextWindowPlatform },
       auth: {
         ...(liveConfig.auth ?? {}),
         offlineName: nextOfflineName,
@@ -1546,10 +1524,6 @@ export function createApiRouter({
       if (changedFields.includes('java.runtime')) {
         const fileJava = isPlainObject(base.java) ? base.java : {};
         nextFile.java = { ...fileJava, runtime: nextJava };
-      }
-      if (changedFields.includes('window.platform')) {
-        const fileWindow = isPlainObject(base.window) ? base.window : {};
-        nextFile.window = { ...fileWindow, platform: nextWindowPlatform };
       }
       if (changedFields.some((field) => field.startsWith('auth.'))) {
         const fileAuth = isPlainObject(base.auth) ? base.auth : {};

@@ -274,7 +274,6 @@ export function createInstanceManager(options = {}) {
         signal: opts.signal,
         onOutput: opts.onOutput,
         onProgress: report,
-        windowPlatform: opts.windowPlatform,
         extraJvmArgs: meta.extraJvmArgs ?? [],
         extraGameArgs: meta.extraGameArgs ?? [],
       });

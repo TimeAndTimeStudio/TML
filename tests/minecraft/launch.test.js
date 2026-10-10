@@ -472,7 +472,7 @@ test('launch spawns java directly, captures output and creates the game director
   assert.ok(lines.length > 0);
 });
 
-test('buildProcessEnv keeps the environment for auto and forces Wayland for wayland', () => {
+test('buildProcessEnv always forces a Wayland-only environment', () => {
   const base = {
     WAYLAND_DISPLAY: 'wayland-0',
     WAYLAND_SOCKET: '3',
@@ -481,56 +481,38 @@ test('buildProcessEnv keeps the environment for auto and forces Wayland for wayl
     HOME: '/home/player',
   };
 
-  const auto = buildProcessEnv(undefined, base, { CUSTOM: '1' });
-  assert.equal(auto.WAYLAND_DISPLAY, 'wayland-0');
-  assert.equal(auto.DISPLAY, ':0');
-  assert.equal(auto.CUSTOM, '1');
-  assert.equal('SDL_VIDEO_DRIVER' in auto, false, 'auto must not force a video driver');
-  assert.equal(auto.XDG_SESSION_TYPE, 'wayland');
-
-  const wayland = buildProcessEnv('wayland', base, { CUSTOM: '1' });
-  assert.equal('DISPLAY' in wayland, false, 'wayland only must cut off the X11/XWayland path');
-  assert.equal(wayland.WAYLAND_DISPLAY, 'wayland-0');
-  assert.equal(wayland.CUSTOM, '1');
-  assert.equal(wayland.SDL_VIDEO_DRIVER, 'wayland', 'SDL_VIDEO_DRIVER is the override SDL itself documents');
-  assert.equal(wayland.SDL_VIDEODRIVER, 'wayland');
-  assert.equal(wayland.XDG_SESSION_TYPE, 'wayland');
+  const env = buildProcessEnv(base, { CUSTOM: '1' });
+  assert.equal('DISPLAY' in env, false, 'the game must never see DISPLAY — no X11/XWayland fallback');
+  assert.equal(env.WAYLAND_DISPLAY, 'wayland-0');
+  assert.equal(env.CUSTOM, '1');
+  assert.equal(env.SDL_VIDEO_DRIVER, 'wayland', 'SDL_VIDEO_DRIVER is the override SDL itself documents');
+  assert.equal(env.SDL_VIDEODRIVER, 'wayland');
+  assert.equal(env.XDG_SESSION_TYPE, 'wayland');
+  assert.equal(env.HOME, '/home/player');
 });
 
-test('launch spawns java with Wayland variables only when the window platform allows it', async () => {
+test('launch spawns java with a Wayland-only environment', async () => {
   const { launcher, installer } = makeLauncher({ javaPath: ENV_JAVA });
   const version = makeVersion();
   materialize(installer, await installer.plan(version));
   const waylandSession = { WAYLAND_DISPLAY: 'wayland-0', XDG_SESSION_TYPE: 'wayland', DISPLAY: ':99' };
 
-  const kept = await launcher.launch(version, {
-    gameDir: path.join(workDir, 'game-env-auto'),
-    env: waylandSession,
-  });
-  assert.equal((await kept.exited).code, 0);
-  const keptOut = kept.output.stdout.join('\n');
-  assert.ok(keptOut.includes('wayland: wayland-0'));
-  assert.ok(keptOut.includes('session: wayland'));
-  assert.ok(keptOut.includes('display: :99'), 'auto must keep the session DISPLAY');
-  assert.ok(!keptOut.includes('sdl: x11'), 'auto must never force the SDL video driver');
-
-  const forced = await launcher.launch(version, {
+  const handle = await launcher.launch(version, {
     gameDir: path.join(workDir, 'game-env-wayland'),
-    windowPlatform: 'wayland',
     env: waylandSession,
   });
-  assert.equal((await forced.exited).code, 0);
-  const forcedOut = forced.output.stdout.join('\n');
+  assert.equal((await handle.exited).code, 0);
+  const out = handle.output.stdout.join('\n');
   assert.ok(
-    forcedOut.includes('display: unset'),
-    'windowPlatform wayland must remove DISPLAY so the game cannot fall back to X11/XWayland',
+    out.includes('display: unset'),
+    'DISPLAY must be removed so the game cannot fall back to X11/XWayland',
   );
   assert.ok(
-    forcedOut.includes('sdl: wayland'),
-    'wayland must set SDL_VIDEO_DRIVER — SDL probes x11 as a fallback otherwise',
+    out.includes('sdl: wayland'),
+    'SDL_VIDEO_DRIVER must be set — SDL probes x11 as a fallback otherwise',
   );
-  assert.ok(forcedOut.includes('session: wayland'));
-  assert.ok(forcedOut.includes('wayland: wayland-0'), 'wayland must keep the Wayland connection');
+  assert.ok(out.includes('session: wayland'));
+  assert.ok(out.includes('wayland: wayland-0'), 'the Wayland connection must be kept');
 });
 
 test('launch never interprets arguments through a shell', async () => {
