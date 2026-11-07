@@ -17,7 +17,6 @@ import { createLauncher } from './minecraft/launch.js';
 import { createInstanceManager } from './instance/manager.js';
 import { createInstanceExporter } from './instance/export.js';
 import { createInstanceImporter } from './instance/import.js';
-import { installBundledInstances } from './instance/bundled.js';
 import { createModInstaller } from './mods/install.js';
 import { createFabricInstaller } from './fabric/installer.js';
 import { createFabricApi } from './fabric/api.js';
@@ -103,12 +102,6 @@ async function main() {
     version: config.version,
     node: process.version,
     dataDir: config.paths.dataDir,
-  });
-
-  await installBundledInstances({
-    dataDir: config.paths.dataDir,
-    instancesDir: config.paths.instancesDir,
-    logger,
   });
 
   const minecraft = createMinecraftApi({ config, logger });
