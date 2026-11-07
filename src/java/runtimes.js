@@ -12,7 +12,8 @@ import { validateUrl } from '../security/urls.js';
 
 export const JAVA_RUNTIME_ALL_URL =
   'https://piston-meta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json';
-export const RUNTIME_PLATFORM = 'windows';
+// Mojang แยก key all.json ตามสถาปนาแล่ว — TML เป็น Windows x64 เสมอ
+export const RUNTIME_PLATFORM = 'windows-x64';
 export const JAVA_RUNTIME_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 const RUNTIME_MARKER = '.tml-runtime.json';

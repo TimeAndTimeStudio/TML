@@ -56,7 +56,7 @@ function buildAllJson() {
   });
   return {
     gamecore: [],
-    windows: {
+    'windows-x64': {
       'java-runtime-delta': [entry('21.0.7', '2025-05-19')],
       'java-runtime-gamma': [entry('17.0.15', '2025-05-19')],
       'jre-legacy': [entry('8u202', '2020-11-17')],
@@ -178,7 +178,7 @@ test('parseJavaRuntimeList keeps available Windows runtimes and sorts newest maj
 test('parseJavaRuntimeList rejects unusable payloads', () => {
   assert.throws(() => parseJavaRuntimeList(null), { code: 'JAVA_RUNTIME_LIST_INVALID' });
   assert.throws(() => parseJavaRuntimeList([]), { code: 'JAVA_RUNTIME_LIST_INVALID' });
-  assert.throws(() => parseJavaRuntimeList({ windows: {} }), { code: 'JAVA_RUNTIME_LIST_INVALID' });
+  assert.throws(() => parseJavaRuntimeList({ 'windows-x64': {} }), { code: 'JAVA_RUNTIME_LIST_INVALID' });
   assert.throws(() => parseJavaRuntimeList({ linux: { 'java-runtime-gamma': [] } }), {
     code: 'JAVA_RUNTIME_LIST_INVALID',
   });
