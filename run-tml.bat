@@ -24,6 +24,7 @@ set "HEALTH=%BASE%/api/health"
 where node >nul 2>nul
 if errorlevel 1 (
   echo error: node not found on PATH - install Node.js 18.17 or newer first
+  pause
   exit /b 1
 )
 
@@ -39,10 +40,11 @@ call :health
 if not errorlevel 1 goto :open
 set /a tries+=1
 if %tries% LSS 30 (
-  timeout /t 0.5 /nobreak >nul
+  timeout /t 1 /nobreak >nul
   goto :wait
 )
 echo error: the TML server did not answer on %BASE%
+pause
 exit /b 1
 
 :reuse
