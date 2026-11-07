@@ -1,0 +1,7 @@
+{
+  "name": "Main",
+  "minecraftVersion": "26.2",
+  "loader": "fabric",
+  "fabricLoaderVersion": "0.20.1",
+  "type": "client"
+}

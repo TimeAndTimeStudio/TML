@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-06 14:59 +0700
-// License: GPL-3.0-or-later
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

@@ -1,17 +1,18 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { CancelledError, CorruptDataError, JavaRuntimeError, LaunchError, ValidationError } from '../core/errors.js';
-import { assertLinuxPlatform } from '../core/platform.js';
+import { assertSupportedPlatform } from '../core/platform.js';
 import { ensureDir, pathExists } from '../core/filesystem.js';
-import { NATIVES_MANIFEST, evaluateRules } from './install.js';
+import { NATIVES_MANIFEST, detectPlatform, evaluateRules } from './install.js';
 import { findMinecraftJava } from '../java/runtime.js';
+import { DEFAULT_MEMORY, parseMemory } from '../instance/validate.js';
 
-export const CLASSPATH_SEPARATOR = ':';
+// Windows ใช้ ; คั่น classpath (ตรงข้าม colon ของ POSIX)
+export const CLASSPATH_SEPARATOR = path.delimiter;
 export const LAUNCHER_NAME = 'TML';
 export const MAX_OUTPUT_LINES = 500;
 export const MAX_MISSING_DETAILS = 25;
@@ -95,6 +96,80 @@ function resolveArgumentList(entries, ctx) {
   return out;
 }
 
+export function resolveDefaultUserJvmArgs(entries, options = {}) {
+  const unresolved = new Set();
+  const ctx = {
+    values: {},
+    unresolved,
+    ruleContext: {
+      os: options.os ?? detectPlatform(),
+      features: options.features ?? {},
+    },
+  };
+  return resolveArgumentList(Array.isArray(entries) ? entries : [], ctx)
+    .filter((argument) => argument !== '' && !isManagedMemoryJvmArg(argument));
+}
+
+// Version manifests can contain optional option/value pairs (for example
+// --clientId ${clientid}). Do not pass a dangling option when the account or
+// version metadata has no value for it.
+function omitEmptyOptionValues(args) {
+  const out = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === '') continue;
+    if (argument.startsWith('--') && args[index + 1] === '') {
+      index += 1;
+      continue;
+    }
+    out.push(argument);
+  }
+  return out;
+}
+
+function resolveMemory(memory = DEFAULT_MEMORY) {
+  const min = memory?.min ?? DEFAULT_MEMORY.min;
+  const max = memory?.max ?? DEFAULT_MEMORY.max;
+  if (parseMemory(min) > parseMemory(max)) {
+    throw new ValidationError('"memory.min" must not exceed "memory.max"', {
+      code: 'INVALID_MEMORY',
+      details: { min, max },
+    });
+  }
+  return { min, max };
+}
+
+function hasJvmOption(args, option) {
+  return args.some((argument) => argument === option || argument.startsWith(`${option}=`));
+}
+
+function isManagedMemoryJvmArg(argument) {
+  return argument.startsWith('-Xms') || argument.startsWith('-Xmx');
+}
+
+function getNativeDirectories(args, nativesDir) {
+  const properties = [
+    '-Djava.library.path=',
+    '-Djna.tmpdir=',
+    '-Dorg.lwjgl.system.SharedLibraryExtractPath=',
+    '-Dio.netty.native.workdir=',
+  ];
+  const directories = new Set([nativesDir]);
+  for (const argument of args) {
+    const property = properties.find((candidate) => argument.startsWith(candidate));
+    if (!property) continue;
+    for (const value of argument.slice(property.length).split(path.delimiter)) {
+      if (!value) continue;
+      const directory = path.resolve(value);
+      const relative = path.relative(nativesDir, directory);
+      if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
+        directories.add(directory);
+      }
+    }
+  }
+  return [...directories];
+}
+
 function normalizeAuth(auth) {
   if (auth === undefined || auth === null) return createOfflineSession();
   if (typeof auth !== 'object' || Array.isArray(auth)) {
@@ -150,20 +225,14 @@ function captureOutput(child, output, onOutput) {
   }
 }
 
-// สร้าง env ของกระบวนการเกม: บังคับ Wayland native เท่านั้น — ตัดทาง X11/XWayland ทิ้ง
-// (ลบ DISPLAY) + บังคับ SDL ไม่ให้ probe กลับไป x11 ด้วย SDL_VIDEO_DRIVER (ตัว override ที่ SDL
-// ระบุใน message ของมันเอง) + ค่า SDL_VIDEODRIVER (ชื่อ legacy) + XDG_SESSION_TYPE ให้ตรงกับความจริง
+// Preserve the desktop session environment for the game process so Minecraft
+// can select its windowing backend the same way it does under Prism.
 export function buildProcessEnv(baseEnv = process.env, overrides = {}) {
-  const env = { ...baseEnv, ...overrides };
-  delete env.DISPLAY;
-  env.XDG_SESSION_TYPE = 'wayland';
-  env.SDL_VIDEO_DRIVER = 'wayland';
-  env.SDL_VIDEODRIVER = 'wayland';
-  return env;
+  return { ...baseEnv, ...overrides };
 }
 
 export function createLauncher(options = {}) {
-  assertLinuxPlatform();
+  assertSupportedPlatform(options.platform ?? process.platform);
 
   const config = options.config ?? null;
   const logger = options.logger ?? null;
@@ -225,6 +294,7 @@ export function createLauncher(options = {}) {
       launcher_name: LAUNCHER_NAME,
       launcher_version: launcherVersion,
       library_directory: layout.libraries,
+      path: plan.logging?.dest ?? '',
     };
     if (resolution?.width !== undefined && resolution?.width !== null) {
       values.resolution_width = String(resolution.width);
@@ -288,40 +358,50 @@ export function createLauncher(options = {}) {
     const values = buildValues({ plan, auth, gameDir, nativesDir, classpath: classpathString, resolution: opts.resolution });
     const ctx = { values, unresolved, ruleContext: { os: plan.os, features } };
 
-    const jvmArgs = plan.arguments?.jvm ? resolveArgumentList(plan.arguments.jvm, ctx) : [];
-    if (!jvmArgs.some((arg) => arg.startsWith('-Djava.library.path='))) {
+    // Mojang's version profile is the source of truth for version-specific JVM and
+    // game arguments. Apply its allow/deny rules before adding launcher-managed values.
+    const jvmArgs = ['-Duser.language=en'];
+    if (plan.arguments?.jvm) {
+      jvmArgs.push(...resolveArgumentList(plan.arguments.jvm, ctx).filter((arg) => !isManagedMemoryJvmArg(arg)));
+    }
+    if (Array.isArray(opts.extraJvmArgs)) {
+      jvmArgs.push(...opts.extraJvmArgs.filter((arg) => typeof arg === 'string' && arg !== '' && !isManagedMemoryJvmArg(arg)));
+    }
+
+    if (!hasJvmOption(jvmArgs, '-Djava.library.path')) {
       jvmArgs.push(`-Djava.library.path=${nativesDir}`);
-    }
-    if (!jvmArgs.some((arg) => arg.startsWith('-Dminecraft.launcher.brand='))) {
-      jvmArgs.push(`-Dminecraft.launcher.brand=${LAUNCHER_NAME}`);
-    }
-    if (!jvmArgs.some((arg) => arg.startsWith('-Dminecraft.launcher.version='))) {
-      jvmArgs.push(`-Dminecraft.launcher.version=${launcherVersion}`);
     }
     if (!jvmArgs.includes('-cp') && !jvmArgs.includes('-classpath')) {
       jvmArgs.push('-cp', classpathString);
     }
-    if (plan.logging && !jvmArgs.some((arg) => arg.startsWith('-Dlog4j.configurationFile='))) {
-      jvmArgs.push(`-Dlog4j.configurationFile=${plan.logging.dest}`);
+
+    const memory = resolveMemory(opts.memory);
+    // Instance memory settings are authoritative even if a profile also supplies heap flags.
+    for (let index = jvmArgs.length - 1; index >= 0; index -= 1) {
+      if (jvmArgs[index] === '-Xms' || jvmArgs[index] === '-Xmx') {
+        jvmArgs.splice(index, Math.min(2, jvmArgs.length - index));
+      } else if (jvmArgs[index].startsWith('-Xms') || jvmArgs[index].startsWith('-Xmx')) {
+        jvmArgs.splice(index, 1);
+      }
     }
-    if (Array.isArray(opts.extraJvmArgs)) {
-      jvmArgs.push(...opts.extraJvmArgs);
+    jvmArgs.push(`-Xms${memory.min}`, `-Xmx${memory.max}`);
+
+    if (typeof plan.logging?.argument === 'string' && plan.logging.argument !== '') {
+      const loggingArgument = substitutePlaceholders(plan.logging.argument, values, unresolved);
+      if (loggingArgument !== '' && !jvmArgs.includes(loggingArgument)) jvmArgs.push(loggingArgument);
     }
 
     let gameArgs;
     if (plan.arguments?.game) {
-      gameArgs = resolveArgumentList(plan.arguments.game, ctx);
+      gameArgs = omitEmptyOptionValues(resolveArgumentList(plan.arguments.game, ctx));
     } else if (plan.minecraftArguments) {
-      gameArgs = splitLegacyArguments(plan.minecraftArguments).map((token) =>
-        substitutePlaceholders(token, values, unresolved),
+      gameArgs = omitEmptyOptionValues(
+        splitLegacyArguments(plan.minecraftArguments).map((token) => substitutePlaceholders(token, values, unresolved)),
       );
     } else {
       gameArgs = [];
     }
-    if (Array.isArray(opts.extraGameArgs)) {
-      gameArgs.push(...opts.extraGameArgs);
-    }
-
+    if (Array.isArray(opts.extraGameArgs)) gameArgs.push(...opts.extraGameArgs.filter((arg) => typeof arg === 'string' && arg !== ''));
     return {
       id: plan.id,
       mainClass: plan.mainClass,
@@ -332,6 +412,7 @@ export function createLauncher(options = {}) {
       classpath,
       classpathString,
       nativesDir,
+      nativeDirs: getNativeDirectories(jvmArgs, nativesDir),
       assetsRoot: layout.assets,
       libraryDir: layout.libraries,
       gameDir,
@@ -367,7 +448,7 @@ export function createLauncher(options = {}) {
     }
 
     await ensureDir(launchPlan.gameDir);
-    await ensureDir(launchPlan.nativesDir);
+    for (const directory of launchPlan.nativeDirs) await ensureDir(directory);
 
     const envOverrides = opts.env && typeof opts.env === 'object' ? opts.env : {};
     const child = spawn(launchPlan.java.path, launchPlan.args, {
@@ -376,6 +457,7 @@ export function createLauncher(options = {}) {
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
       detached: false,
+      windowsHide: true,
     });
 
     const output = { stdout: [], stderr: [] };

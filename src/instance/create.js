@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import crypto from 'node:crypto';
 import { InstanceError, ValidationError } from '../core/errors.js';
@@ -31,9 +30,8 @@ export async function createInstance(options = {}) {
     java: options.java,
     memory: options.memory,
     extraJvmArgs: options.extraJvmArgs,
+    extraJvmArgsConfigured: options.extraJvmArgsConfigured === true,
     extraGameArgs: options.extraGameArgs,
-    port: options.port,
-    eulaAccepted: options.eulaAccepted,
   });
   validateInstanceId(meta.id);
 

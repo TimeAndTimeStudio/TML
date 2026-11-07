@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import fsp from 'node:fs/promises';
 import zlib from 'node:zlib';

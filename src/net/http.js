@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import http from 'node:http';
 import https from 'node:https';
@@ -16,7 +15,7 @@ const inflateRaw = promisify(zlib.inflateRaw);
 const brotliDecompress = promisify(zlib.brotliDecompress);
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-export const DEFAULT_USER_AGENT = `TML/${VERSION} (Time Mini Launcher)`;
+export const DEFAULT_USER_AGENT = `TML/${VERSION} (https://github.com/TimeAndTimeStudio)`;
 
 function hostOf(url) {
   const parsed = typeof url === 'string' ? new URL(url) : url;

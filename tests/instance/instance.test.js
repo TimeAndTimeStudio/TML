@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -306,7 +305,7 @@ test('launch installs the instance version and starts in its own game directory'
   fabric.put('play1', { id: FABRIC_ID });
   const manager = createInstanceManager({ instancesDir: dir, launcher, installer, fabric });
 
-  await manager.create({ ...BASE, id: 'play1', minecraftVersion: '1.20.1', extraJvmArgs: ['-Dtml.probe=1'], extraGameArgs: ['--tml-flag'] });
+  await manager.create({ ...BASE, id: 'play1', minecraftVersion: '1.20.1', memory: { min: '1G', max: '6G' }, extraJvmArgs: ['-Dtml.probe=1'], extraGameArgs: ['--tml-flag'] });
   const result = await manager.launch('play1', { auth: { username: 'Steve' } });
 
   assert.deepEqual(installer.statusCalls.map(versionValue), [FABRIC_ID], 'installer must receive the fabric version, not the vanilla id');
@@ -316,6 +315,7 @@ test('launch installs the instance version and starts in its own game directory'
   assert.equal(launcher.calls.length, 1);
   assert.equal(launcher.calls[0].version.id, FABRIC_ID);
   assert.equal(launcher.calls[0].opts.gameDir, path.join(dir, 'play1', 'minecraft'));
+  assert.deepEqual(launcher.calls[0].opts.memory, { min: '1G', max: '6G' }, 'instance memory must reach the launcher');
   assert.deepEqual(launcher.calls[0].opts.extraJvmArgs, ['-Dtml.probe=1'], 'custom jvm args must reach the launcher');
   assert.deepEqual(launcher.calls[0].opts.extraGameArgs, ['--tml-flag'], 'custom game args must reach the launcher');
   assert.equal(result.gameDir, path.join(dir, 'play1', 'minecraft'));

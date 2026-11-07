@@ -1,40 +1,5 @@
-/* Inter (SIL OFL) — TTF ทั้งหมดดาวน์โหลดจาก Google Fonts เก็บไว้ใน web/fonts/ ใช้จากในเครื่องเท่านั้น */
-@font-face {
-  font-family: 'Inter';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('../fonts/inter-400.ttf') format('truetype');
-}
-@font-face {
-  font-family: 'Inter';
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('../fonts/inter-500.ttf') format('truetype');
-}
-@font-face {
-  font-family: 'Inter';
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url('../fonts/inter-600.ttf') format('truetype');
-}
-@font-face {
-  font-family: 'Inter';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('../fonts/inter-700.ttf') format('truetype');
-}
-@font-face {
-  font-family: 'Inter';
-  font-style: normal;
-  font-weight: 800;
-  font-display: swap;
-  src: url('../fonts/inter-800.ttf') format('truetype');
-}
-
+@font-face{font-family:Kanit;src:url('../fonts/kanit/Kanit-Regular.ttf') format('truetype');font-weight:400;font-style:normal;font-display:swap}
+/* Kanit (SIL OFL) — TTF ทั้งหมดดาวน์โหลดจาก Google Fonts เก็บไว้ใน web/fonts/ ใช้จากในเครื่องเท่านั้น */
 [hidden] {
   display: none !important;
 }
@@ -57,7 +22,7 @@
   --radius: 0;
   --radius-sm: 0;
   --radius-md: 0;
-  --font: 'Inter', ui-sans-serif, system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font: 'Kanit', ui-sans-serif, system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
 }
@@ -108,43 +73,6 @@ code {
   min-width: 320px;
 }
 
-/* ---------- brand (หัว sidebar) ---------- */
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.brand-mark {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--border);
-  background: #000000;
-}
-
-.brand-mark img {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-.brand-name {
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  font-size: 15px;
-}
-
-.brand-name small {
-  display: block;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  font-size: 11px;
-  color: var(--muted);
-}
-
 .pill {
   display: inline-flex;
   align-items: center;
@@ -159,15 +87,6 @@ code {
 
 .pill-muted {
   font-family: var(--mono);
-}
-
-/* ป้ายชื่อใน sidebar = ปุ่มเปิด account (แทนปุ่ม Account เดิม) */
-button.pill {
-  cursor: pointer;
-}
-
-button.pill:hover {
-  color: var(--text);
 }
 
 /* ---------- shell ---------- */
@@ -189,13 +108,6 @@ button.pill:hover {
   border-right: 1px solid var(--border);
   min-height: 0;
   overflow-y: auto;
-}
-
-.sidebar .brand {
-  flex-shrink: 0;
-  padding: 0 8px 12px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid var(--border);
 }
 
 .sidebar-label {
@@ -351,7 +263,7 @@ button.pill:hover {
   background: var(--accent);
 }
 
-/* ---------- sidebar footer (version / account) ---------- */
+/* ---------- sidebar footer (version) ---------- */
 
 .sidebar-foot {
   margin-top: auto;
@@ -370,17 +282,6 @@ button.pill:hover {
 
 /* version pill เต็มความกว้างของ footer */
 .side-status .pill {
-  flex: 1;
-  justify-content: center;
-}
-
-.side-account {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.side-account #accountPill {
   flex: 1;
   justify-content: center;
 }
@@ -1049,7 +950,8 @@ input[type="file"]:focus {
   color: var(--accent);
 }
 
-.pill-running {
+.pill-running,
+.pill-selected {
   background: rgba(255, 138, 30, 0.12);
   color: var(--accent);
   border-color: rgba(255, 138, 30, 0.35);
@@ -1141,6 +1043,36 @@ input[type="file"]:focus {
 
 .mod-row:hover {
   background: var(--bg-3);
+}
+
+.mod-row.has-mod-side-warning {
+  flex-wrap: wrap;
+}
+
+.mod-row .mod-side-warning {
+  flex: 1 0 100%;
+}
+
+.mod-side-warning {
+  display: block;
+  margin: 4px 0 0;
+  padding: 6px 9px;
+  border: 1px solid rgba(255, 138, 30, 0.48);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 138, 30, 0.1);
+  color: #ffd2a8;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.mod-side-tags {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.version-pick-side-warning {
+  margin: 0 0 10px;
 }
 
 .mod-name {
@@ -1294,46 +1226,7 @@ input[type="file"]:focus {
   font-weight: 650;
 }
 
-/* Account + Modrinth search */
-
-.auth-code {
-  margin: 14px 0;
-  padding: 14px 16px;
-  border: 1px dashed var(--accent-2);
-  border-radius: var(--radius-sm);
-  background: var(--bg-2);
-  font-family: var(--mono);
-  font-size: 26px;
-  letter-spacing: 6px;
-  text-align: center;
-  color: var(--accent-2);
-}
-
-/* โค้ดอยู่บน ปุ่ม COPY ด้านล่างเต็มความกว้าง */
-.auth-code-row {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 14px 0;
-}
-
-.auth-code-row .auth-code {
-  margin: 0;
-}
-
-.auth-waiting {
-  color: var(--warn);
-  animation: auth-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes auth-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
-}
-
-#authModal a {
-  color: var(--accent-2);
-}
+/* Modrinth search */
 
 .mod-search-block {
   margin-top: 18px;
@@ -1419,6 +1312,26 @@ input[type="file"]:focus {
 
 .choose-file-btn .choose-file-icon {
   flex-shrink: 0;
+}
+
+/* Keep Import's pointer target and label stable across hover/press states. */
+#importChooseBtn {
+  transform: none;
+  transition: none;
+  animation: none;
+}
+
+#importChooseBtn:hover:not(:disabled) {
+  background: rgba(255, 138, 30, 0.14);
+  border-color: var(--accent);
+  color: var(--accent-2);
+}
+
+#importChooseBtn:active:not(:disabled) {
+  transform: none;
+  background: rgba(255, 138, 30, 0.22);
+  border-color: var(--accent);
+  color: var(--accent-2);
 }
 
 .version-pick-list {
@@ -1608,24 +1521,6 @@ input[type="file"]:focus {
   white-space: nowrap;
 }
 
-.mod-icon {
-  width: 40px;
-  height: 40px;
-  flex: none;
-  border-radius: var(--radius-sm);
-  object-fit: cover;
-  background: var(--bg-3);
-}
-
-.mod-icon-fallback {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent);
-  font-weight: 800;
-  font-size: 16px;
-}
-
 /* Custom dropdown (Create Instance: Minecraft / Fabric version) */
 .dropdown {
   position: relative;
@@ -1674,7 +1569,7 @@ input[type="file"]:focus {
   top: calc(100% + 6px);
   left: 0;
   right: 0;
-  padding: 8px;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-1);
@@ -1682,8 +1577,8 @@ input[type="file"]:focus {
 }
 
 .dropdown-filter {
-  width: 100%;
-  margin-bottom: 6px;
+  width: calc(100% - 16px);
+  margin: 8px 8px 6px;
 }
 
 .dropdown-list {
@@ -1809,54 +1704,7 @@ input[type="file"]:focus {
   margin-top: 12px;
 }
 
-/* account pill ต้องซ่อนจริงเมื่อ sign out (.pill ตั้ง display: inline-flex ซึ่ง override [hidden] ของ browser) */
-.pill[hidden] {
-  display: none;
-}
-
-/* Skin overlay (หน้าต่างสกิน — เปิดจากปุ่ม SKIN ข้างชื่อผู้เล่น) */
-.skin-overlay canvas {
-  display: block;
-  width: min(440px, 100%);
-  height: auto;
-  margin: 10px auto 0;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
-  border-radius: 0;
-  background: rgba(255, 255, 255, 0.03);
-  image-rendering: pixelated;
-}
-.skin-file-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 14px;
-}
-.skin-file-row #skinFileName {
-  font-family: var(--mono);
-  word-break: break-all;
-}
-/* เลือกไฟล์–ชื่อไฟล์–ปุ่มอัปโหลด อยู่แถวเดียวกัน (อัปโหลดชิดขวา รอจนเลือกไฟล์ก่อนจึงกดได้) */
-.skin-file-row #skinUploadBtn {
-  margin-left: auto;
-}
-.skin-overlay .field {
-  margin-top: 12px;
-}
-.skin-overlay .dropdown {
-  min-width: 200px;
-}
-.skin-overlay .import-error {
-  margin-top: 10px;
-  color: var(--danger);
-  opacity: 0.9;
-}
-/* RESET แยกไปซ้ายคนละฝั่งกับ CLOSE — ปุ่มทำลายข้อมูลไม่ยืนข้างปุ่มหลัก */
-.skin-overlay .skin-actions #skinResetBtn {
-  margin-right: auto;
-}
-
-/* ---------- Server (START tab): console + EULA banner ---------- */
+/* ---------- Client log console ---------- */
 
 .server-console {
   margin: 6px 0 0;
@@ -1874,26 +1722,16 @@ input[type="file"]:focus {
   word-break: break-word;
 }
 
-.server-console:empty::before {
-  content: 'No output yet — press START to install and run the server.';
-  color: var(--muted);
+.client-log-heading {
+  margin: 22px 0 6px;
 }
 
-.srv-eula {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 10px 12px;
-  margin: 4px 0 8px;
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--warn);
-}
-
-.srv-eula p {
+.client-log-heading h3 {
   margin: 0;
+}
+
+.client-console:empty::before {
+  content: 'No client output yet — press PLAY to launch the game.';
 }
 
 /* ---------- ซ่อน scrollbar ทั้งแอป (ยังเลื่อนได้ปกติ) ---------- */
@@ -1905,4 +1743,32 @@ input[type="file"]:focus {
 
 *::-webkit-scrollbar {
   display: none; /* Chrome / Safari / Edge */
+}
+
+.installed-search{display:block;margin:12px 0}
+.installed-search input{width:100%;box-sizing:border-box}
+
+/* Project links used by installed lists and search results. */
+.modrinth-project-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.mod-icon {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--bg-3);
+}
+
+.mod-icon-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  font-weight: 800;
+  font-size: 16px;
 }

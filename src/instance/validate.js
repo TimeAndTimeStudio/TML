@@ -1,17 +1,15 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import { ValidationError } from '../core/errors.js';
 import { safeVersionId } from '../minecraft/versions.js';
 
 export const SUPPORTED_LOADER = 'fabric';
 export const SUPPORTED_LOADERS = Object.freeze(['fabric']);
-export const INSTANCE_TYPES = Object.freeze(['client', 'server']);
+export const INSTANCE_TYPES = Object.freeze(['client']);
 export const DEFAULT_JAVA = 'minecraft-bundled';
 export const JAVA_CHOICES = Object.freeze(['minecraft-bundled']);
 export const DEFAULT_MEMORY = Object.freeze({ min: '512M', max: '4096M' });
-export const DEFAULT_SERVER_PORT = 25565;
 export const INSTANCE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export const MEMORY_RE = /^[1-9][0-9]{0,8}[KMGT]$/i;
 export const NAME_MAX = 80;
@@ -152,33 +150,12 @@ function validateExtraArgs(value, field) {
   });
 }
 
-// client = เกมปกติ / server = Fabric server ในตัว (ทั้งคู่อยู่ใน instance dir เดียวกัน)
+// client = เกมปกติ — ไม่มีชนิด server แล้ว ระบบจัดการ server ถูกลบออก
 function validateType(value) {
   if (value === undefined || value === null) return 'client';
   if (!INSTANCE_TYPES.includes(value)) {
     throw invalid('INVALID_INSTANCE_TYPE', `Instance type must be one of: ${INSTANCE_TYPES.join(', ')}`, {
       type: typeof value === 'string' ? value : typeof value,
-    });
-  }
-  return value;
-}
-
-function validatePort(value) {
-  if (value === undefined || value === null) return DEFAULT_SERVER_PORT;
-  const port = typeof value === 'string' ? Number(value) : value;
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw invalid('INVALID_SERVER_PORT', 'port must be an integer between 1 and 65535', {
-      port: typeof value === 'string' ? value : typeof value,
-    });
-  }
-  return port;
-}
-
-function validateEulaAccepted(value) {
-  if (value === undefined || value === null) return false;
-  if (typeof value !== 'boolean') {
-    throw invalid('INVALID_EULA_ACCEPTED', 'eulaAccepted must be a boolean', {
-      eulaAccepted: typeof value,
     });
   }
   return value;
@@ -211,6 +188,7 @@ export function validateInstanceMeta(meta) {
     meta.previousMinecraftVersion === ''
       ? null
       : safeVersionId(meta.previousMinecraftVersion);
+  const extraJvmArgs = validateExtraArgs(meta.extraJvmArgs, 'extraJvmArgs');
 
   return Object.freeze({
     id,
@@ -222,10 +200,9 @@ export function validateInstanceMeta(meta) {
     fabricLoaderVersion,
     java: validateJava(meta.java ?? DEFAULT_JAVA),
     memory: validateMemoryPair(meta.memory ?? DEFAULT_MEMORY),
-    extraJvmArgs: Object.freeze(validateExtraArgs(meta.extraJvmArgs, 'extraJvmArgs')),
+    extraJvmArgs: Object.freeze(extraJvmArgs),
+    extraJvmArgsConfigured: meta.extraJvmArgsConfigured === true,
     extraGameArgs: Object.freeze(validateExtraArgs(meta.extraGameArgs, 'extraGameArgs')),
-    port: validatePort(meta.port),
-    eulaAccepted: validateEulaAccepted(meta.eulaAccepted),
     playSeconds: validatePlaySeconds(meta.playSeconds),
     lastPlayedAt: validateLastPlayedAt(meta.lastPlayedAt),
   });

@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,7 +9,6 @@ import { fileURLToPath } from 'node:url';
 
 import { OFFICIAL_SOURCES } from '../../src/security/urls.js';
 import { EXPORT_FORBIDDEN_KEY_PATTERN } from '../../src/instance/export.js';
-import { SESSION_FILE_NAME } from '../../src/auth/token-store.js';
 import { createInstanceExporter } from '../../src/instance/export.js';
 import { createInstanceImporter } from '../../src/instance/import.js';
 import { writeZipFile } from '../../src/archive/zip.js';
@@ -33,9 +31,8 @@ function walk(dir, filter) {
 const IMPORT_RE = /(?:^|\n)\s*(?:import|export)[^'"\n]*?from\s+['"]([^'"]+)['"]/g;
 
 test('rules 1-2: no npm dependencies and only built-in or relative imports', () => {
-  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.equal(Object.keys(pkg.dependencies ?? {}).length, 0, 'runtime dependencies are forbidden');
-  assert.equal(Object.keys(pkg.devDependencies ?? {}).length, 0, 'dev dependencies are forbidden');
+  const version = fs.readFileSync(path.join(ROOT, 'APP_VERSION'), 'utf8').trim();
+  assert.match(version, /^\d+\.\d+\.\d+$/, 'application version must be semantic');
 
   for (const file of walk(SRC, (abs) => abs.endsWith('.js'))) {
     const source = fs.readFileSync(file, 'utf8');
@@ -69,8 +66,8 @@ test('rules 3-4: web UI is self-contained vanilla HTML/CSS/JS', () => {
   }
 });
 
-test('rules 7-11: official sources are exactly minecraft, fabric, modrinth and microsoft', () => {
-  assert.deepEqual(Object.keys(OFFICIAL_SOURCES).sort(), ['fabric', 'microsoft', 'minecraft', 'modrinth']);
+test('rules 7-11: official sources are exactly minecraft, fabric and modrinth', () => {
+  assert.deepEqual(Object.keys(OFFICIAL_SOURCES).sort(), ['fabric', 'minecraft', 'modrinth']);
   for (const [name, source] of Object.entries(OFFICIAL_SOURCES)) {
     const hosts = source.hosts ?? source;
     const list = Array.isArray(hosts) ? hosts : [];
@@ -97,22 +94,19 @@ test('rule 20: instance code never creates symlinks or hard links', () => {
   }
 });
 
-test('rule 31: linux only — no win32 or darwin code paths', () => {
+test('rule 31: Windows only — no linux or darwin code paths', () => {
   const platform = fs.readFileSync(path.join(SRC, 'core', 'platform.js'), 'utf8');
   assert.match(platform, /UNSUPPORTED_PLATFORM/);
-  assert.match(platform, /'linux'/);
+  assert.match(platform, /'win32'/);
 
   for (const file of walk(SRC, (abs) => abs.endsWith('.js'))) {
     const source = fs.readFileSync(file, 'utf8');
-    assert.ok(!/['"]win32['"]/.test(source), `${path.relative(ROOT, file)} contains a win32 branch`);
+    assert.ok(!/['"]linux['"]/.test(source), `${path.relative(ROOT, file)} contains a linux branch`);
     assert.ok(!/['"]darwin['"]/.test(source), `${path.relative(ROOT, file)} contains a darwin branch`);
   }
 });
 
-test('rule 27: auth secrets live outside instances and are export-forbidden', async () => {
-  assert.ok(!SESSION_FILE_NAME.startsWith('instances/'));
-  assert.ok(!SESSION_FILE_NAME.includes('/'), 'session file must sit at the data dir root');
-
+test('rule 27: export-forbidden secret keys are scanned', () => {
   for (const key of ['accessToken', 'refreshToken', 'clientSecret', 'authorization']) {
     assert.ok(
       EXPORT_FORBIDDEN_KEY_PATTERN.test(key),

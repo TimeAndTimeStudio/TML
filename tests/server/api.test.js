@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -37,6 +36,10 @@ const BASE = Object.freeze({ minecraftVersion: '1.20.1', fabricLoaderVersion: '0
 
 const MOD_JAR = Buffer.from('mod jar served by api test\n'.repeat(4));
 const MOD_HASHES = hashBuffer(MOD_JAR, ['sha1', 'sha512']);
+const RESOURCE_ZIP = buildZip([{ name: 'pack.mcmeta', data: '{"pack":{"pack_format":15,"description":"API test"}}' }]);
+const SHADER_ZIP = buildZip([{ name: 'shaders/shaders.properties', data: '# API test shader pack\n' }]);
+const RESOURCE_HASHES = hashBuffer(RESOURCE_ZIP, ['sha1', 'sha512']);
+const SHADER_HASHES = hashBuffer(SHADER_ZIP, ['sha1', 'sha512']);
 
 function createFakeLauncher() {
   const handles = [];
@@ -180,6 +183,13 @@ before(async () => {
   const importer = createInstanceImporter({ manager, tempRoot: config.paths.tmpDir, logger });
 
   upstream = http.createServer((req, res) => {
+    const zip = req.url === '/files/api-resource.zip' ? RESOURCE_ZIP
+      : req.url === '/files/api-shader.zip' ? SHADER_ZIP : null;
+    if (zip) {
+      res.writeHead(200, { 'content-type': 'application/zip' });
+      res.end(zip);
+      return;
+    }
     if (req.url === '/files/apimod.jar') {
       res.writeHead(200, { 'content-type': 'application/java-archive' });
       res.end(MOD_JAR);
@@ -193,6 +203,17 @@ before(async () => {
 
   const modrinth = {
     async getVersion(versionId) {
+      const pack = versionId === 'api-resource-1'
+        ? { filename: 'api-resource.zip', projectId: 'api-resource-project', bytes: RESOURCE_ZIP, hashes: RESOURCE_HASHES, loaders: [] }
+        : versionId === 'api-shader-1'
+          ? { filename: 'api-shader.zip', projectId: 'api-shader-project', bytes: SHADER_ZIP, hashes: SHADER_HASHES, loaders: ['iris'] }
+          : null;
+      if (pack) return {
+        id: versionId, projectId: pack.projectId, versionNumber: '1.0.0',
+        gameVersions: ['1.20.1'], loaders: pack.loaders, dependencies: [],
+        files: [{ filename: pack.filename, url: `${base}/files/${pack.filename}`, primary: true,
+          size: pack.bytes.length, sha1: pack.hashes.sha1, sha512: pack.hashes.sha512 }],
+      };
       if (versionId !== 'apimod-1') {
         const err = new Error('version not found');
         err.code = 'NOT_FOUND';
@@ -459,7 +480,7 @@ test('mods API lists, installs and removes mods for one instance', async () => {
 
   const after = await request('/api/instances/modded1/mods');
   assert.equal(after.json.count, 1);
-  assert.deepEqual(after.json.mods, [{ filename: 'apimod.jar', size: MOD_JAR.length }]);
+  assert.deepEqual(after.json.mods, [{ filename: 'apimod.jar', size: MOD_JAR.length, projectId: 'apiproj' }]);
 
   const card = await request('/api/instances/modded1');
   assert.equal(card.json.instance.mods, 1);
@@ -510,7 +531,7 @@ test('mods API installs a versionIds batch and reports each version independentl
   // packs batch เดินเส้นทางเดียวกัน
   const packs = await request('/api/instances/batchy1/packs', {
     method: 'POST',
-    body: { versionIds: ['apimod-1'], kind: 'shaderpacks' },
+    body: { versionIds: ['api-shader-1'], kind: 'shaderpacks' },
   });
   assert.equal(packs.status, 201, packs.text);
   assert.equal(packs.json.kind, 'shaderpacks');
@@ -528,22 +549,36 @@ test('packs API installs, lists and removes resource packs and shaders per kind'
   assert.equal(shaderBefore.status, 200);
   assert.equal(shaderBefore.json.count, 0);
 
+  for (const kind of ['resourcepacks', 'shaderpacks']) {
+    const wrongType = await request('/api/instances/packy1/packs', {
+      method: 'POST', body: { versionId: 'apimod-1', kind },
+    });
+    assert.equal(wrongType.status, 400);
+    assert.equal(wrongType.json.error.code, 'INVALID_PACK_FILE_TYPE');
+    assert.equal(fs.existsSync(path.join(dataDir, 'instances', 'packy1', 'minecraft', kind, 'apimod.jar')), false);
+  }
+  const zipAsMod = await request('/api/instances/packy1/mods', {
+    method: 'POST', body: { versionId: 'api-resource-1' },
+  });
+  assert.equal(zipAsMod.status, 400);
+  assert.equal(zipAsMod.json.error.code, 'INVALID_PACK_FILE_TYPE');
+
   const installed = await request('/api/instances/packy1/packs', {
     method: 'POST',
-    body: { versionId: 'apimod-1', kind: 'resourcepacks' },
+    body: { versionId: 'api-resource-1', kind: 'resourcepacks' },
   });
   assert.equal(installed.status, 201, installed.text);
   assert.equal(installed.json.kind, 'resourcepacks');
-  assert.equal(installed.json.files[0].filename, 'apimod.jar');
+  assert.equal(installed.json.files[0].filename, 'api-resource.zip');
   assert.equal(
-    fs.existsSync(path.join(dataDir, 'instances', 'packy1', 'minecraft', 'resourcepacks', 'apimod.jar')),
+    fs.existsSync(path.join(dataDir, 'instances', 'packy1', 'minecraft', 'resourcepacks', 'api-resource.zip')),
     true,
     'the pack lands in gameDir/resourcepacks',
   );
 
   const shaderInstall = await request('/api/instances/packy1/packs', {
     method: 'POST',
-    body: { versionId: 'apimod-1', kind: 'shaderpacks' },
+    body: { versionId: 'api-shader-1', kind: 'shaderpacks' },
   });
   assert.equal(shaderInstall.status, 201);
   assert.equal(shaderInstall.json.kind, 'shaderpacks');
@@ -561,14 +596,15 @@ test('packs API installs, lists and removes resource packs and shaders per kind'
 
   const afterResource = await request('/api/instances/packy1/packs?kind=resourcepacks');
   assert.equal(afterResource.json.count, 1);
-  assert.deepEqual(afterResource.json.packs, [{ filename: 'apimod.jar', size: MOD_JAR.length }]);
+  assert.deepEqual(afterResource.json.packs, [{ filename: 'api-resource.zip', size: RESOURCE_ZIP.length, projectId: 'api-resource-project' }]);
   const afterShader = await request('/api/instances/packy1/packs?kind=shaderpacks');
   assert.equal(afterShader.json.count, 1);
+  assert.deepEqual(afterShader.json.packs, [{ filename: 'api-shader.zip', size: SHADER_ZIP.length, projectId: 'api-shader-project' }]);
 
   const mods = await request('/api/instances/packy1/mods');
   assert.equal(mods.json.count, 0, 'packs never leak into the mods folder');
 
-  const removed = await request('/api/instances/packy1/packs/apimod.jar?kind=resourcepacks', { method: 'DELETE' });
+  const removed = await request('/api/instances/packy1/packs/api-resource.zip?kind=resourcepacks', { method: 'DELETE' });
   assert.equal(removed.status, 200);
   assert.equal(removed.json.removed, true);
   assert.equal(removed.json.kind, 'resourcepacks');

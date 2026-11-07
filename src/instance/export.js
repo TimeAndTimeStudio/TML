@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -14,10 +13,7 @@ import { SUPPORTED_LOADER, validateInstanceName } from './validate.js';
 export const EXPORT_INSTANCE_FILE = 'instance.json';
 export const EXPORT_GAME_DIRS = Object.freeze(['mods', 'config', 'saves', 'resourcepacks', 'shaderpacks']);
 export const EXPORT_GAME_FILES = Object.freeze(['options.txt']);
-// server instance → เอาเฉพาะไฟล์ที่ server ใช้จริง (world + server.properties + eula) ไม่เอา saves/resourcepacks ของ client
-export const EXPORT_SERVER_GAME_DIRS = Object.freeze(['mods', 'config', 'world']);
-export const EXPORT_SERVER_GAME_FILES = Object.freeze(['server.properties', 'eula.txt']);
-export const EXPORT_TYPES = Object.freeze(['client', 'server']);
+export const EXPORT_TYPES = Object.freeze(['client']);
 export const EXPORT_MAX_NAME_LENGTH = 150;
 export const EXPORT_FORBIDDEN_KEY_PATTERN = /(token|secret|password|credential|authorization|cookie|api[_-]?key|session)/i;
 
@@ -214,13 +210,10 @@ export function createInstanceExporter(options = {}) {
 
     if (await pathExists(paths.gameDir)) {
       entries.push({ name: 'minecraft/', src: null, dir: true, size: 0 });
-      const isServer = meta.type === 'server';
-      const gameDirs = isServer ? EXPORT_SERVER_GAME_DIRS : EXPORT_GAME_DIRS;
-      const gameFiles = isServer ? EXPORT_SERVER_GAME_FILES : EXPORT_GAME_FILES;
-      for (const sub of gameDirs) {
+      for (const sub of EXPORT_GAME_DIRS) {
         await collectDir(paths.gameDir, sub, entries, skipped, instanceId);
       }
-      for (const file of gameFiles) {
+      for (const file of EXPORT_GAME_FILES) {
         const src = path.join(paths.gameDir, file);
         try {
           const stat = await fsp.stat(src);

@@ -1,19 +1,18 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import { execFile } from 'node:child_process';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { JavaRuntimeError, ValidationError } from '../core/errors.js';
-import { assertLinuxPlatform } from '../core/platform.js';
+import { assertSupportedPlatform } from '../core/platform.js';
 
 export const JAVA_PROBE_TIMEOUT_MS = 5000;
 export const MAX_SCAN_DEPTH = 5;
 export const MAX_SCAN_NODES = 500;
 
-const JAVA_RELATIVE = path.join('bin', 'java');
+const JAVA_RELATIVE = path.join('bin', 'java.exe');
 const COMPONENT_RE = /(jre-legacy|java-runtime-[a-z-]+|jre-x\d+|minecraft-java-exe)/;
 
 const SCAN_SKIP_DIRS = new Set([
@@ -71,19 +70,27 @@ export function parseJavaVersion(output) {
 }
 
 function homeDir(env) {
-  return env.HOME ?? os.homedir();
+  return env.USERPROFILE ?? os.homedir();
 }
 
 export function defaultJavaRoots({ env = process.env, minecraftDir } = {}) {
+  const programFiles = env.ProgramFiles ?? 'C:\\Program Files';
   const official = [
-    '/usr/share/minecraft-launcher/runtime',
-    '/opt/minecraft-launcher/runtime',
-    '/usr/lib/minecraft-launcher/runtime',
-  ].map((root) => ({ path: root, source: 'official-launcher' }));
+    { path: path.join(programFiles, 'Minecraft Launcher', 'runtime'), source: 'official-launcher' },
+    {
+      path: path.join(
+        env.LOCALAPPDATA ?? '',
+        'Packages',
+        'Microsoft.4297127D64EC6_8wekyb3d8bbwe',
+        'LocalCache',
+        'Local',
+        'runtime',
+      ),
+      source: 'official-launcher',
+    },
+  ];
 
-  const managedDirs = minecraftDir
-    ? [minecraftDir]
-    : [path.join(homeDir(env), '.minecraft'), path.join(homeDir(env), 'snap', 'minecraft', 'common', '.minecraft')];
+  const managedDirs = minecraftDir ? [minecraftDir] : [path.join(homeDir(env), '.minecraft')];
 
   return [...official, ...managedDirs.map((dir) => ({ path: path.join(dir, 'runtime'), source: 'minecraft-managed' }))];
 }
@@ -196,10 +203,13 @@ async function probeCandidate(binary, { probe, execFileImpl, timeoutMs }) {
 async function validateExecutable(binary) {
   const stat = await statOrNull(binary);
   if (!stat || !stat.isFile()) return { ok: false, reason: 'not-a-file' };
-  try {
-    await fsp.access(binary, fsp.constants.X_OK);
-  } catch {
-    return { ok: false, reason: 'not-executable' };
+  // บน Windows ไม่มี permission bit (X_OK ตีความไม่ได้) → ข้ามการตรวจ executable bit
+  if (process.platform !== 'win32') {
+    try {
+      await fsp.access(binary, fsp.constants.X_OK);
+    } catch {
+      return { ok: false, reason: 'not-executable' };
+    }
   }
   return { ok: true };
 }
@@ -219,7 +229,7 @@ function byComponentPreference(requiredComponent) {
 }
 
 export async function findMinecraftJava(options = {}) {
-  assertLinuxPlatform(options.platform ?? process.platform);
+  assertSupportedPlatform(options.platform ?? process.platform);
 
   const env = options.env ?? process.env;
   const logger = options.logger ?? null;

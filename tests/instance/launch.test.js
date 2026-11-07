@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -198,6 +197,56 @@ test('launch reports staged progress while installing and clears it afterwards',
   await assert.rejects(failing.launch(badMeta.id), { code: 'NO_FABRIC' });
   assert.equal(failing.getLaunchProgress(badMeta.id).launching, false, 'a failed launch clears its progress too');
   assert.throws(() => failing.getLaunchProgress('BAD ID!'), { code: 'INVALID_INSTANCE_ID' });
+});
+
+test('client console captures output and launch uses only saved JVM arguments', async () => {
+  const dir = tmpDir();
+  const launcher = createFakeLauncher();
+  const fabric = createFakeFabric();
+  const installer = {
+    async status() { return { ready: true }; },
+    async plan(version) { return { arguments: version.arguments }; },
+  };
+  const manager = createInstanceManager({ instancesDir: dir, launcher, installer, fabric });
+  const meta = await manager.create({ name: 'Client log', ...BASE });
+  fabric.put(meta.id, {
+    id: 'fabric-loader-0.15.7-1.20.1',
+    mainClass: KNOT_CLIENT,
+    arguments: {
+      'default-user-jvm': [
+        { value: ['-Xms2G', '-Xmx4G', '-XX:+UseCompactObjectHeaders', '-XX:+AlwaysPreTouch', '-XX:+UseStringDeduplication'] },
+        { rules: [{ action: 'allow', os: { name: 'linux' } }], value: ['-XX:+UseZGC'] },
+        { rules: [{ action: 'allow', os: { name: 'windows' } }], value: ['-XX:+UseG1GC'] },
+      ],
+    },
+  });
+
+  const defaults = await manager.getDefaultJvmArgs(meta.id);
+  assert.deepEqual(defaults, [
+    '-XX:+UseCompactObjectHeaders',
+    '-XX:+AlwaysPreTouch',
+    '-XX:+UseStringDeduplication',
+    '-XX:+UseG1GC',
+  ]);
+  await manager.launch(meta.id);
+  assert.deepEqual(launcher.calls[0].opts.extraJvmArgs, [], 'metadata defaults are displayed in settings, not appended invisibly at launch');
+  launcher.calls[0].opts.onOutput('Crash details', 'stderr');
+  launcher.calls[0].opts.onOutput('Game log', 'stdout');
+  assert.deepEqual(manager.readConsole(meta.id, 0).lines, [
+    { seq: 1, text: 'Crash details', stream: 'stderr' },
+    { seq: 2, text: 'Game log', stream: 'stdout' },
+  ]);
+
+  await manager.stop(meta.id);
+  await manager.update(meta.id, { extraJvmArgs: ['-XX:+UseZGC'] });
+  await manager.launch(meta.id);
+  assert.deepEqual(launcher.calls[1].opts.extraJvmArgs, ['-XX:+UseZGC'], 'saved field values reach the launcher exactly');
+  await manager.stop(meta.id);
+  await manager.update(meta.id, { extraJvmArgs: [] });
+  await manager.launch(meta.id);
+  assert.deepEqual(launcher.calls[2].opts.extraJvmArgs, [], 'an explicitly saved empty field stays empty');
+  assert.equal(manager.readConsole(meta.id, 0).lines.length, 0, 'a new launch starts a fresh console buffer');
+  await manager.stop(meta.id);
 });
 
 test('launch without a fabric collaborator fails before any spawn', async () => {

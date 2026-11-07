@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -173,6 +172,27 @@ test('search maps hits and applies default paging', async () => {
   assert.equal(hit.title, 'Sodium');
 });
 
+test('resource and shader search can require an exact Minecraft version facet', async () => {
+  const res = await request('/api/modrinth/search?q=foliage&type=resourcepack&game=26.2');
+  assert.equal(res.status, 200);
+  assert.equal(res.json.gameVersion, '26.2');
+  assert.deepEqual(modrinth.calls.search.at(-1).options.facets, [
+    ['project_type:resourcepack'],
+    ['versions:26.2'],
+  ]);
+
+  const shader = await request('/api/modrinth/search?q=shaders&type=shader&game=26.2');
+  assert.equal(shader.status, 200);
+  assert.deepEqual(modrinth.calls.search.at(-1).options.facets, [
+    ['project_type:shader'],
+    ['versions:26.2'],
+  ]);
+
+  const bad = await request('/api/modrinth/search?q=foliage&type=shader&game=26.2%26project_type%3Amod');
+  assert.equal(bad.status, 400);
+  assert.equal(bad.json.error.code, 'INVALID_GAME_VERSION');
+});
+
 test('search passes explicit paging and forwards validation errors', async () => {
   const ok = await request('/api/modrinth/search?q=sodium&limit=5&offset=10');
   assert.equal(ok.status, 200);
@@ -244,6 +264,12 @@ test('versions endpoint forwards game and loader filters and maps files', async 
   assert.equal(version.versionNumber, '0.5.8');
   assert.deepEqual(version.files, [{ filename: 'sodium.jar', size: 1234, primary: true }]);
   assert.equal('url' in version.files[0], false, 'raw download urls stay server-side');
+
+  await request('/api/modrinth/project/P1/versions?game=26.2');
+  assert.deepEqual({ ...modrinth.calls.listVersions.at(-1).filters }, {
+    limit: 20,
+    gameVersions: ['26.2'],
+  });
 });
 
 test('fabric loader endpoint maps the meta list', async () => {

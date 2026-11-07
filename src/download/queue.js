@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import { EventEmitter } from 'node:events';
 import { CancelledError, ValidationError } from '../core/errors.js';

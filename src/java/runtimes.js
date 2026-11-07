@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -13,7 +12,7 @@ import { validateUrl } from '../security/urls.js';
 
 export const JAVA_RUNTIME_ALL_URL =
   'https://piston-meta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json';
-export const RUNTIME_PLATFORM = 'linux';
+export const RUNTIME_PLATFORM = 'windows';
 export const JAVA_RUNTIME_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 const RUNTIME_MARKER = '.tml-runtime.json';
@@ -156,7 +155,7 @@ export function createJavaRuntimes(options = {}) {
 
   async function isDownloaded(name) {
     const root = runtimeRoot(name);
-    return (await pathExists(path.join(root, RUNTIME_MARKER))) && (await pathExists(path.join(root, 'bin', 'java')));
+    return (await pathExists(path.join(root, RUNTIME_MARKER))) && (await pathExists(path.join(root, 'bin', 'java.exe')));
   }
 
   async function list({ refresh = false } = {}) {
@@ -250,7 +249,8 @@ export function createJavaRuntimes(options = {}) {
         logger,
         signal,
       });
-      if (file.executable) await fsp.chmod(dest, 0o755);
+      // file.executable = ไฟล์ที่ต้องมี executable bit (เช่น java, javaw บน Linux) — Windows ไม่มี permission bit จึงข้ามได้
+      if (file.executable && process.platform !== 'win32') await fsp.chmod(dest, 0o755);
       loaded += file.size ?? 0;
       bytes += out?.bytes ?? 0;
       done += 1;

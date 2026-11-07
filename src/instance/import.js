@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -50,7 +49,7 @@ export function createInstanceImporter(options = {}) {
     throw invalid('createInstanceImporter requires an instance manager with create() and paths()', 'INVALID_INSTANCE_MANAGER');
   }
 
-  async function inspect(zipFile, inspectOptions = {}) {
+  async function inspect(zipFile) {
     if (typeof zipFile !== 'string' || zipFile === '') {
       throw importZipError(String(zipFile), null);
     }
@@ -114,29 +113,14 @@ export function createInstanceImporter(options = {}) {
     }
 
     const manifest = validateExportManifest(raw);
-    const expectedType = inspectOptions.expectedType ?? null;
-    // ปฏิเสธตั้งแต่ preview — ไม่ใช่รอให้ confirm แล้วค่อยงงว่า archive ผิดชนิด
-    assertExpectedType(manifest, expectedType, zipFile);
-    return { entries, manifest, expectedType };
-  }
-
-  // กันสลับชนิด — archive client ห้ามเข้าทาง import server และในทางกลับกัน
-  function assertExpectedType(manifest, expectedType, zipFile) {
-    if (expectedType === null || expectedType === undefined || manifest.type === expectedType) return;
-    const wanted = expectedType === 'server' ? 'server' : 'instance';
-    const got = manifest.type === 'server' ? 'a server' : 'an instance';
-    throw invalid(
-      `This archive contains ${got}, not a ${wanted} — use the matching import button`,
-      'IMPORT_TYPE_MISMATCH',
-      { file: zipFile, expected: expectedType, actual: manifest.type }
-    );
+    return { entries, manifest };
   }
 
   async function importInstance(zipFile, importOptions = {}) {
     if (importOptions.id !== undefined) validateInstanceId(importOptions.id);
     if (importOptions.name !== undefined) validateInstanceName(importOptions.name);
 
-    const { entries, manifest } = await inspect(zipFile, { expectedType: importOptions.expectedType ?? null });
+    const { entries, manifest } = await inspect(zipFile);
     const signal = importOptions.signal ?? null;
     if (signal?.aborted) throw new CancelledError('Import cancelled', { details: { file: zipFile } });
 

@@ -1,13 +1,12 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_MSA_CLIENT_ID, loadConfig, publicConfig } from '../../src/core/config.js';
+import { loadConfig, publicConfig } from '../../src/core/config.js';
 import { ConfigError } from '../../src/core/errors.js';
 
 function tmpDir() {
@@ -24,9 +23,9 @@ test('loadConfig uses defaults', () => {
     const config = loadConfig({ env: { TML_DATA_DIR: dir } });
 
     assert.equal(config.server.host, '127.0.0.1');
-    assert.equal(config.server.port, 8620);
+    assert.equal(config.server.port, 8653);
     assert.equal(config.log.level, 'warn');
-    assert.ok(!('window' in config), 'the game window setting is gone — the game is always Wayland-only');
+    assert.ok(!('window' in config), 'the game window setting is gone — on Windows the launcher page runs in a browser');
     assert.equal(config.phase, undefined);
     assert.equal(config.paths.webDir, path.join(config.projectRoot, 'web'));
     assert.ok(config.paths.instancesDir.startsWith(dir));
@@ -104,45 +103,29 @@ test('publicConfig exposes only the safe subset', () => {
   }
 });
 
-test('own Microsoft app client id defaults to the built-in app, overridable by file or env', () => {
+test('offlineName is loaded from the config file and exposed publicly', () => {
   const dir = tmpDir();
   try {
-    const GUID = '11111111-2222-3333-4444-555555555555';
-
     const none = loadConfig({ env: { TML_DATA_DIR: dir } });
-    assert.equal(none.auth.clientId, DEFAULT_MSA_CLIENT_ID);
-    assert.equal(none.auth.source, 'default');
     assert.equal(none.auth.offlineName, null, 'no offline name is configured by default');
-    assert.match(DEFAULT_MSA_CLIENT_ID, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'the built-in default must be a GUID');
-    assert.deepEqual(publicConfig(none).auth, { configured: true, source: 'default' });
-    assert.equal(publicConfig(none).offlineName, null, 'no offline name is configured by default');
-    assert.ok(!JSON.stringify(publicConfig(none)).includes(DEFAULT_MSA_CLIENT_ID), 'public config must not leak the raw client id');
+    assert.equal(publicConfig(none).offlineName, null);
 
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ clientId: GUID }));
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ offlineName: '  Steve_1  ' }));
     const fromFile = loadConfig({ env: { TML_DATA_DIR: dir } });
-    assert.equal(fromFile.auth.clientId, GUID);
-    assert.equal(fromFile.auth.source, 'file');
-    const view = publicConfig(fromFile);
-    assert.deepEqual(view.auth, { configured: true, source: 'file' });
-    assert.equal(view.offlineName, null);
-    assert.ok(!JSON.stringify(view).includes(GUID), 'public config must not leak the raw client id');
-
-    const OTHER = '22222222-3333-4444-5555-666666666666';
-    const fromEnv = loadConfig({ env: { TML_DATA_DIR: dir, TML_MSA_CLIENT_ID: `  ${OTHER}  ` } });
-    assert.equal(fromEnv.auth.clientId, OTHER);
-    assert.equal(fromEnv.auth.source, 'env');
+    assert.equal(fromFile.auth.offlineName, 'Steve_1', 'the value is trimmed before use');
+    assert.equal(publicConfig(fromFile).offlineName, 'Steve_1');
   } finally {
     cleanup(dir);
   }
 });
 
-test('invalid Microsoft app client ids raise ConfigError', () => {
+test('invalid offline names raise ConfigError', () => {
   const dir = tmpDir();
   try {
-    assert.throws(() => loadConfig({ env: { TML_DATA_DIR: dir, TML_MSA_CLIENT_ID: 'not-a-guid' } }), ConfigError);
-
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ clientId: 'also-not-a-guid' }));
-    assert.throws(() => loadConfig({ env: { TML_DATA_DIR: dir } }), ConfigError);
+    for (const bad of ['ab', 'a'.repeat(17), 'with space', 'bad!name']) {
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ offlineName: bad }));
+      assert.throws(() => loadConfig({ env: { TML_DATA_DIR: dir } }), ConfigError);
+    }
   } finally {
     cleanup(dir);
   }

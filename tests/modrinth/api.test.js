@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -187,7 +186,7 @@ test('search builds query params, enforces options and normalizes hits', async (
   assert.deepEqual(MODRINTH_SEARCH_INDEXES, ['relevance', 'downloads', 'follows', 'updated', 'newest']);
 });
 
-test('getProject normalizes project fields, license and donations', async () => {
+test('getProject normalizes project fields and donations without exposing license metadata', async () => {
   const client = fakeClient(async (url) => {
     assert.equal(url, `https://api.modrinth.com/v2/project/fabric-api`);
     return { status: 200, data: makeProject() };
@@ -207,8 +206,7 @@ test('getProject normalizes project fields, license and donations', async () => 
   assert.deepEqual(project.loaders, ['fabric']);
   assert.deepEqual(project.gameVersions, ['1.20.1']);
   assert.deepEqual(project.versions, [VERSION_ID]);
-  assert.deepEqual(project.license, { id: 'Apache-2.0', name: 'Apache License 2.0', url: null });
-  assert.ok(Object.isFrozen(project.license));
+  assert.equal(Object.hasOwn(project, 'license'), false);
   assert.equal(project.status, 'approved');
   assert.equal(project.issuesUrl, 'https://github.com/FabricMC/fabric/issues');
   assert.equal(project.wikiUrl, null);
@@ -220,6 +218,15 @@ test('getProject normalizes project fields, license and donations', async () => 
   await assert.rejects(api.getProject('../evil'), { code: 'INVALID_MODRINTH_ID' });
   await assert.rejects(api.getProject(''), { code: 'INVALID_MODRINTH_ID' });
   assert.equal(client.calls.length, 1);
+});
+
+test('getProject ignores missing or malformed upstream license metadata', async () => {
+  for (const license of [undefined, null, 'Apache-2.0', { id: null }]) {
+    const { api } = apiReturning(makeProject({ license }));
+    const project = await api.getProject('fabric-api');
+    assert.equal(project.id, PROJECT_ID);
+    assert.equal(Object.hasOwn(project, 'license'), false);
+  }
 });
 
 test('missing projects and versions map to 404 errors', async () => {
@@ -263,6 +270,7 @@ test('listVersions filters by game version and loader, normalizing files and dep
 
   const request = new URL(client.calls[0].url);
   assert.deepEqual(JSON.parse(request.searchParams.get('game_versions')), ['1.20.1']);
+  assert.equal(request.searchParams.get('include_changelog'), 'false');
   assert.deepEqual(JSON.parse(request.searchParams.get('loaders')), ['fabric']);
   assert.equal(request.searchParams.get('limit'), '3');
   assert.equal(client.calls[0].opts.source, 'modrinth');
@@ -388,7 +396,6 @@ test('corrupt responses are rejected with MODRINTH_RESPONSE_INVALID', async () =
     ['search hit downloads', (api) => api.search('x'), { hits: [makeHit({ downloads: 'lots' })], total_hits: 1, offset: 0, limit: 20 }],
     ['project downloads', (api) => api.getProject('fabric-api'), makeProject({ downloads: 'lots' })],
     ['project donations', (api) => api.getProject('fabric-api'), makeProject({ donation_urls: ['ko-fi'] })],
-    ['project license', (api) => api.getProject('fabric-api'), makeProject({ license: 'Apache-2.0' })],
     ['version list', (api) => api.listVersions('fabric-api'), { nope: true }],
     ['version type', (api) => api.getVersion(VERSION_ID), makeVersion({ version_type: 'weird' })],
     ['version files', (api) => api.getVersion(VERSION_ID), makeVersion({ files: 'nope' })],

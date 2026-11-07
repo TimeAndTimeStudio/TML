@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -122,12 +121,12 @@ test('wrong method returns 405 with Allow header', async () => {
 });
 
 test('project files outside web/ are never served', async () => {
-  const root = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+  const root = { version: fs.readFileSync(path.join(process.cwd(), 'APP_VERSION'), 'utf8').trim() };
 
   for (const pathname of ['/package.json', '/../../package.json', '/%2e%2e/%2e%2e/package.json']) {
     const res = await rawRequest(pathname);
     assert.notEqual(res.status, 200);
-    assert.ok(!res.body.includes(`"name": "${root.name}"`), `leaked package.json via ${pathname}`);
+    assert.ok(!res.body.includes(`"version": "${root.version}"`), `leaked package.json via ${pathname}`);
   }
 });
 

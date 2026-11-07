@@ -1,11 +1,10 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { CancelledError, CorruptDataError, InstallError, ValidationError } from '../core/errors.js';
-import { assertLinuxPlatform } from '../core/platform.js';
+import { assertSupportedPlatform } from '../core/platform.js';
 import { pathExists, readJson, removePath, resolveWithin, writeJson, ensureDir } from '../core/filesystem.js';
 import { createDownloader } from '../download/downloader.js';
 import { hashFile } from '../download/hash.js';
@@ -31,14 +30,16 @@ export const INSTALL_STAGES = Object.freeze([
 
 const SAFE_NAME_RE = /^[A-Za-z0-9 ._=-]+$/;
 
-export function detectPlatform(arch = process.arch, platform = process.platform) {
-  assertLinuxPlatform(platform);
+// Plan for a Windows install regardless of the dev machine — the app itself is
+// gated to win32 at the entry point (assertSupportedPlatform in index.js).
+export function detectPlatform(arch = process.arch, platform = 'win32') {
+  assertSupportedPlatform(platform);
   const archName = arch === 'x64' ? 'x86_64' : arch === 'ia32' ? 'x86' : arch;
   return Object.freeze({
-    name: 'linux',
+    name: 'windows',
     arch: archName,
     bits: arch === 'x64' || arch === 'arm64' || arch === 's390x' ? 64 : 32,
-    rawPlatform: 'linux',
+    rawPlatform: 'win32',
     rawArch: arch,
   });
 }
@@ -159,10 +160,10 @@ export function planVersion(version, context = {}) {
 
   const id = safeVersionId(version.id);
   const os = context.os ?? detectPlatform(context.arch ?? process.arch);
-  if (os.name !== 'linux') {
-    throw new ValidationError('planVersion() plans for Linux only', {
+  if (os.name !== 'windows') {
+    throw new ValidationError('planVersion() plans for Windows only', {
       code: 'UNSUPPORTED_PLATFORM',
-      details: { os: os.name, supported: 'linux' },
+      details: { os: os.name, supported: 'windows' },
     });
   }
   const ruleContext = { os, features: context.features ?? {} };
@@ -258,10 +259,15 @@ export function planVersion(version, context = {}) {
     : null;
 
   let logging = null;
-  const loggingFile = version.logging?.client?.file;
+  const loggingConfig = version.logging?.client;
+  const loggingFile = loggingConfig?.file;
   if (loggingFile) {
     const file = requireDownload(loggingFile, 'logging.client.file', id);
-    logging = { ...file, id: safeName(file.id ?? loggingFile.id, 'logging file id') };
+    logging = {
+      ...file,
+      id: safeName(file.id ?? loggingFile.id, 'logging file id'),
+      ...(typeof loggingConfig.argument === 'string' ? { argument: loggingConfig.argument } : {}),
+    };
   }
 
   return {

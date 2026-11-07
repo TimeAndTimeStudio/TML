@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -57,7 +56,7 @@ function buildAllJson() {
   });
   return {
     gamecore: [],
-    linux: {
+    windows: {
       'java-runtime-delta': [entry('21.0.7', '2025-05-19')],
       'java-runtime-gamma': [entry('17.0.15', '2025-05-19')],
       'jre-legacy': [entry('8u202', '2020-11-17')],
@@ -65,14 +64,14 @@ function buildAllJson() {
       'minecraft-java-exe': [entry('1.0.0', '2020-01-01')],
       'broken-entry': [{ availability: { group: 'x', progress: 100 } }],
     },
-    'mac-os': {},
+    linux: {},
   };
 }
 
 function buildManifest() {
   const files = {
     bin: { type: 'directory' },
-    'bin/java': {
+    'bin/java.exe': {
       type: 'file',
       executable: true,
       downloads: { raw: { sha1: BIN_HASHES.sha1, size: BIN_JAVA.length, url: `${base}/files/bin-java` } },
@@ -162,7 +161,7 @@ function makeJava(overrides = {}) {
   return createJavaRuntimes({ config, logger, client: createClient(), validator: localOnly, ...overrides });
 }
 
-test('parseJavaRuntimeList keeps available linux runtimes and sorts newest major first', () => {
+test('parseJavaRuntimeList keeps available Windows runtimes and sorts newest major first', () => {
   const runtimes = parseJavaRuntimeList(allJson);
   assert.deepEqual(
     runtimes.map((runtime) => runtime.name),
@@ -179,8 +178,11 @@ test('parseJavaRuntimeList keeps available linux runtimes and sorts newest major
 test('parseJavaRuntimeList rejects unusable payloads', () => {
   assert.throws(() => parseJavaRuntimeList(null), { code: 'JAVA_RUNTIME_LIST_INVALID' });
   assert.throws(() => parseJavaRuntimeList([]), { code: 'JAVA_RUNTIME_LIST_INVALID' });
-  assert.throws(() => parseJavaRuntimeList({ linux: {} }), { code: 'JAVA_RUNTIME_LIST_INVALID' });
-  assert.throws(() => parseJavaRuntimeList({ 'win-64': { 'java-runtime-gamma': [] } }), {
+  assert.throws(() => parseJavaRuntimeList({ windows: {} }), { code: 'JAVA_RUNTIME_LIST_INVALID' });
+  assert.throws(() => parseJavaRuntimeList({ linux: { 'java-runtime-gamma': [] } }), {
+    code: 'JAVA_RUNTIME_LIST_INVALID',
+  });
+  assert.throws(() => parseJavaRuntimeList(allJson, { platform: 'linux' }), {
     code: 'JAVA_RUNTIME_LIST_INVALID',
   });
 });
@@ -211,7 +213,7 @@ test('parseRuntimeManifest separates directories, downloadable files and links',
   assert.deepEqual(directories, ['bin', 'legal', 'lib']);
   assert.deepEqual(
     downloads.map((file) => file.rel),
-    ['bin/java', 'legal/notice.txt', 'lib/app.jar'],
+    ['bin/java.exe', 'legal/notice.txt', 'lib/app.jar'],
   );
   assert.equal(downloads[0].executable, true);
   assert.equal(downloads[1].executable, false);
@@ -257,8 +259,8 @@ test('download() installs every file, chmods executables and materialises legal 
 
   const root = path.join(javaDir, 'java-runtime-gamma');
   assert.equal(result.path, root);
-  assert.equal(fs.readFileSync(path.join(root, 'bin', 'java'), 'utf8'), BIN_JAVA.toString());
-  assert.ok(fs.statSync(path.join(root, 'bin', 'java')).mode & 0o111, 'bin/java must be executable');
+  assert.equal(fs.readFileSync(path.join(root, 'bin', 'java.exe'), 'utf8'), BIN_JAVA.toString());
+  assert.ok(fs.statSync(path.join(root, 'bin', 'java.exe')).mode & 0o111, 'bin/java.exe must be executable off-Windows');
   assert.equal(fs.readFileSync(path.join(root, 'lib', 'app.jar'), 'utf8'), APP_JAR.toString());
   assert.equal(fs.readFileSync(path.join(root, 'legal', 'notice.txt'), 'utf8'), NOTICE.toString());
   assert.equal(
@@ -302,7 +304,7 @@ test('ensure() picks a runtime by major or component and reports unavailable maj
 
   const legacy = await java.ensure({ requiredMajor: 8 });
   assert.equal(legacy.name, 'jre-legacy');
-  assert.equal(fs.existsSync(path.join(javaDir, 'jre-legacy', 'bin', 'java')), true);
+  assert.equal(fs.existsSync(path.join(javaDir, 'jre-legacy', 'bin', 'java.exe')), true);
 
   const mismatched = await java.ensure({ requiredMajor: 17, requiredComponent: 'jre-legacy' });
   assert.equal(mismatched.name, 'java-runtime-gamma', 'the major wins over a mismatched component name');

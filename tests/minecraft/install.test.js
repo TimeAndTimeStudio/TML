@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -55,7 +54,7 @@ const assetA = Buffer.from('asset-a-bytes');
 const assetB = Buffer.from('asset-b-bytes');
 const nativesJar = buildZip([
   { name: 'META-INF/MANIFEST.MF', data: 'Manifest-Version: 1.0\n' },
-  { name: 'linux/x64/org/lwjgl/liblwjgl.so', data: Buffer.from([0x7f, 0x45, 0x4c, 0x46, 1, 2, 3]), method: 'deflate' },
+  { name: 'windows/x64/org/lwjgl/liblwjgl.dll', data: Buffer.from([0x4d, 0x5a, 0x90, 0x00, 1, 2, 3]), method: 'deflate' },
   { name: 'license.txt', data: 'LWJGL license', method: 'deflate' },
 ]);
 
@@ -135,8 +134,8 @@ function makeLibraries() {
           },
           'natives-windows': {
             path: 'org/lwjgl/lwjgl/lwjgl/2.9.4/lwjgl-2.9.4-natives-windows.jar',
-            sha1: '1'.repeat(40),
-            size: 10,
+            sha1: sha1(nativesJar),
+            size: nativesJar.length,
             url: `${baseUrl}/libs/natives-windows.jar`,
           },
           'natives-osx': {
@@ -235,7 +234,7 @@ function legacyVersion() {
       },
       {
         name: 'com.example:arch-lib:1.0',
-        natives: { linux: 'natives-linux-${arch}' },
+        natives: { linux: 'natives-linux-${arch}', windows: 'natives-windows-${arch}' },
         downloads: {
           classifiers: {
             'natives-linux-64': {
@@ -243,6 +242,12 @@ function legacyVersion() {
               sha1: '9'.repeat(40),
               size: 42,
               url: `${base}/com/example/arch-lib/1.0/arch-lib-1.0-natives-linux-64.jar`,
+            },
+            'natives-windows-64': {
+              path: 'com/example/arch-lib/1.0/arch-lib-1.0-natives-windows-64.jar',
+              sha1: '8'.repeat(40),
+              size: 42,
+              url: `${base}/com/example/arch-lib/1.0/arch-lib-1.0-natives-windows-64.jar`,
             },
           },
         },
@@ -279,8 +284,9 @@ function legacyVersion() {
 before(async () => {
   route('/client.jar', clientBytes);
   route('/libs/core.jar', coreBytes);
+  route('/libs/win-only.jar', winOnlyBytes);
   route('/libs/binding.jar', bindingBytes);
-  route('/libs/natives-linux.jar', nativesJar);
+  route('/libs/natives-windows.jar', nativesJar);
   route('/asset_indexes/tml.json', assetIndexJson);
   route('/logging/client-1.99.xml', loggingXml);
   route(`/objects/${assetAHash.slice(0, 2)}/${assetAHash}`, assetA);
@@ -328,28 +334,28 @@ function makeInstaller(overrides = {}) {
   return { installer, cacheDir, layout: installer.layout };
 }
 
-test('detectPlatform is Linux-only', () => {
+test('detectPlatform is Windows-only', () => {
   assert.deepEqual(detectPlatform('x64'), {
-    name: 'linux',
+    name: 'windows',
     arch: 'x86_64',
     bits: 64,
-    rawPlatform: 'linux',
+    rawPlatform: 'win32',
     rawArch: 'x64',
   });
-  assert.equal(detectPlatform('ia32').name, 'linux');
+  assert.equal(detectPlatform('ia32').name, 'windows');
   assert.equal(detectPlatform('ia32').arch, 'x86');
   assert.equal(detectPlatform('ia32').bits, 32);
   assert.equal(detectPlatform('arm64').bits, 64);
-  assert.equal(detectPlatform().name, 'linux');
-  assert.equal(detectPlatform().rawPlatform, 'linux');
+  assert.equal(detectPlatform().name, 'windows');
+  assert.equal(detectPlatform().rawPlatform, 'win32');
 
-  for (const platform of ['win32', 'darwin', 'freebsd']) {
+  for (const platform of ['linux', 'darwin', 'freebsd']) {
     assert.throws(
       () => detectPlatform('x64', platform),
       (err) => {
         assert.ok(err instanceof ConfigError);
         assert.equal(err.code, 'UNSUPPORTED_PLATFORM');
-        assert.deepEqual(err.details, { platform, supported: 'linux' });
+        assert.deepEqual(err.details, { platform, supported: 'win32' });
         return true;
       },
     );
@@ -364,10 +370,11 @@ test('evaluateRules implements launcher allow/disallow semantics', () => {
   assert.equal(evaluateRules([], ctx), true);
   assert.equal(evaluateRules([{ action: 'allow' }], ctx), true);
   assert.equal(evaluateRules([{ action: 'disallow' }], ctx), false);
-  assert.equal(evaluateRules([{ action: 'disallow' }, { action: 'allow', os: { name: 'windows' } }], ctx), false);
-  assert.equal(evaluateRules([{ action: 'allow', os: { name: 'linux' } }], ctx), true);
-  assert.equal(evaluateRules([{ action: 'allow', os: { name: 'linux', arch: 'x86_64' } }], ctx), true);
-  assert.equal(evaluateRules([{ action: 'allow', os: { name: 'linux', arch: 'x86' } }], ctx), false);
+  assert.equal(evaluateRules([{ action: 'disallow' }, { action: 'allow', os: { name: 'windows' } }], ctx), true);
+  assert.equal(evaluateRules([{ action: 'allow', os: { name: 'windows' } }], ctx), true);
+  assert.equal(evaluateRules([{ action: 'allow', os: { name: 'windows', arch: 'x86_64' } }], ctx), true);
+  assert.equal(evaluateRules([{ action: 'allow', os: { name: 'windows', arch: 'x86' } }], ctx), false);
+  assert.equal(evaluateRules([{ action: 'allow', os: { name: 'linux' } }], ctx), false);
   assert.equal(evaluateRules([{ action: 'allow', features: { is_demo_user: true } }], ctx), false);
   assert.equal(
     evaluateRules([{ action: 'allow', features: { is_demo_user: true } }], { os, features: { is_demo_user: true } }),
@@ -446,17 +453,17 @@ test('createLayout resolves every install path inside the cache directory', () =
   assert.throws(() => layout.versionFile('../evil'), (err) => err instanceof ValidationError);
 });
 
-test('planVersion filters libraries by Linux rules', () => {
-  const linux = planVersion(legacyVersion());
-  const names = linux.libraries.map((library) => library.name);
-  assert.equal(linux.os.name, 'linux');
+test('planVersion filters libraries by Windows rules', () => {
+  const win = planVersion(legacyVersion());
+  const names = win.libraries.map((library) => library.name);
+  assert.equal(win.os.name, 'windows');
   assert.ok(names.includes('org.lwjgl.lwjgl:lwjgl:2.9.4-nightly-20150209'));
   assert.ok(names.includes('com.example:legacy:1.0'));
-  assert.ok(!names.some((name) => name.includes('windows-only')));
+  assert.ok(names.includes('com.example:windows-only:1.0'));
   assert.ok(!names.some((name) => name.includes('osx-only')));
 
   assert.throws(
-    () => planVersion(legacyVersion(), { os: { name: 'windows', arch: 'x86_64', bits: 64 } }),
+    () => planVersion(legacyVersion(), { os: { name: 'linux', arch: 'x86_64', bits: 64 } }),
     (err) => err instanceof ValidationError && err.code === 'UNSUPPORTED_PLATFORM',
   );
   assert.throws(
@@ -474,32 +481,32 @@ test('planVersion falls back to maven paths for libraries without downloads', ()
   assert.equal(legacy.size, null);
 });
 
-test('planVersion resolves native classifiers for linux only', () => {
-  const linux = planVersion(legacyVersion());
-  assert.equal(linux.natives.length, 2);
-  assert.ok(linux.natives.every((native) => native.key.startsWith('natives-linux')));
+test('planVersion resolves native classifiers for Windows only', () => {
+  const win = planVersion(legacyVersion());
+  assert.equal(win.natives.length, 2);
+  assert.ok(win.natives.every((native) => native.key.startsWith('natives-windows')));
 
-  const lwjgl = linux.natives.find((native) => native.name === 'org.lwjgl.lwjgl:lwjgl:2.9.4-nightly-20150209');
-  assert.equal(lwjgl.key, 'natives-linux');
+  const lwjgl = win.natives.find((native) => native.name === 'org.lwjgl.lwjgl:lwjgl:2.9.4-nightly-20150209');
+  assert.equal(lwjgl.key, 'natives-windows');
   assert.equal(
     lwjgl.path,
-    'org/lwjgl/lwjgl/lwjgl/2.9.4-nightly-20150209/lwjgl-2.9.4-nightly-20150209-natives-linux.jar',
+    'org/lwjgl/lwjgl/lwjgl/2.9.4-nightly-20150209/lwjgl-2.9.4-nightly-20150209-natives-windows.jar',
   );
-  assert.equal(lwjgl.sha1, 'd'.repeat(40));
+  assert.equal(lwjgl.sha1, 'e'.repeat(40));
   assert.deepEqual(lwjgl.exclude, ['META-INF/']);
 
-  const archLib = linux.natives.find((native) => native.name === 'com.example:arch-lib:1.0');
-  assert.equal(archLib.key, 'natives-linux-64');
+  const archLib = win.natives.find((native) => native.name === 'com.example:arch-lib:1.0');
+  assert.equal(archLib.key, 'natives-windows-64');
 
   assert.throws(
     () => planVersion(legacyVersion(), { arch: 'ia32' }),
-    (err) => err instanceof CorruptDataError && /natives-linux-32/.test(err.message),
+    (err) => err instanceof CorruptDataError && /natives-windows-32/.test(err.message),
   );
 });
 
 test('planVersion rejects corrupt native metadata', () => {
   const broken = legacyVersion();
-  delete broken.libraries[0].downloads.classifiers['natives-linux'];
+  delete broken.libraries[0].downloads.classifiers['natives-windows'];
   assert.throws(
     () => planVersion(broken),
     (err) => err instanceof CorruptDataError && /native classifier/.test(err.message),
@@ -571,8 +578,8 @@ test('install downloads every section and extracts natives', async () => {
   assert.equal(result.id, '1.99.9-tml');
   assert.equal(result.type, 'release');
   assert.deepEqual(result.javaVersion, { component: 'java-runtime-gamma', majorVersion: 17 });
-  assert.equal(result.files.total, 8);
-  assert.equal(result.files.downloaded, 8);
+  assert.equal(result.files.total, 9);
+  assert.equal(result.files.downloaded, 9);
   assert.equal(result.files.cached, 0);
   assert.equal(result.files.failed, 0);
   assert.equal(result.bytes.network, result.bytes.present);
@@ -581,8 +588,8 @@ test('install downloads every section and extracts natives', async () => {
   assert.equal(fs.readFileSync(result.path.client).length, clientBytes.length);
   assert.equal(fs.existsSync(path.join(layout.libraries, 'com/example/core/1.0.0/core-1.0.0.jar')), true);
   assert.equal(fs.existsSync(path.join(layout.libraries, 'org/lwjgl/lwjgl/lwjgl/2.9.4/lwjgl-2.9.4.jar')), true);
-  assert.equal(fs.existsSync(path.join(layout.libraries, 'org/lwjgl/lwjgl/lwjgl/2.9.4/lwjgl-2.9.4-natives-linux.jar')), true);
-  assert.equal(fs.existsSync(path.join(layout.libraries, 'com/example/win-only/1.0.0/win-only-1.0.0.jar')), false);
+  assert.equal(fs.existsSync(path.join(layout.libraries, 'org/lwjgl/lwjgl/lwjgl/2.9.4/lwjgl-2.9.4-natives-windows.jar')), true);
+  assert.equal(fs.existsSync(path.join(layout.libraries, 'com/example/win-only/1.0.0/win-only-1.0.0.jar')), true);
   assert.equal(fs.existsSync(result.path.logging), true);
   assert.equal(fs.existsSync(result.path.assetIndex), true);
   assert.equal(fs.existsSync(path.join(layout.objects, assetAHash.slice(0, 2), assetAHash)), true);
@@ -591,7 +598,7 @@ test('install downloads every section and extracts natives', async () => {
 
   const nativesDir = layout.nativesDir(result.id);
   assert.equal(fs.readFileSync(path.join(nativesDir, 'license.txt'), 'utf8'), 'LWJGL license');
-  assert.equal(fs.readFileSync(path.join(nativesDir, 'linux/x64/org/lwjgl/liblwjgl.so')).length, 7);
+  assert.equal(fs.readFileSync(path.join(nativesDir, 'windows/x64/org/lwjgl/liblwjgl.dll')).length, 7);
   assert.equal(fs.existsSync(path.join(nativesDir, 'META-INF')), false);
   assert.equal(result.natives.skipped, false);
   assert.equal(result.natives.files, 2);
@@ -625,9 +632,9 @@ test('a second install is served from cache and skips natives extraction', async
   const hitsAfterFirst = hitCount('/client.jar');
 
   const second = await installer.install(version);
-  assert.equal(second.files.total, 8);
+  assert.equal(second.files.total, 9);
   assert.equal(second.files.downloaded, 0);
-  assert.equal(second.files.cached, 8);
+  assert.equal(second.files.cached, 9);
   assert.equal(second.natives.skipped, true);
   assert.equal(hitCount('/client.jar'), hitsAfterFirst);
   assert.equal(fs.existsSync(layout.nativesDir(version.id)), true);
@@ -639,7 +646,7 @@ test('force re-downloads files and re-extracts natives', async () => {
   await installer.install(version);
 
   const forced = await installer.install(version, { force: true });
-  assert.equal(forced.files.downloaded, 8);
+  assert.equal(forced.files.downloaded, 9);
   assert.equal(forced.files.cached, 0);
   assert.equal(forced.natives.skipped, false);
 });
@@ -652,7 +659,7 @@ test('status reports missing files before install and readiness after', async ()
   assert.equal(before.ready, false);
   assert.equal(before.sections.client.ready, false);
   assert.equal(before.sections.client.reason, 'missing');
-  assert.equal(before.sections.libraries.planned, 2);
+  assert.equal(before.sections.libraries.planned, 3);
   assert.equal(before.sections.assets.ready, false);
   assert.equal(before.sections.natives.ready, false);
 
@@ -797,7 +804,7 @@ test('install works without a logging block or asset index', async () => {
   });
 
   const result = await installer.install('1.99.9-tml');
-  assert.equal(result.files.total, 4);
+  assert.equal(result.files.total, 5);
   assert.equal(result.path.logging, null);
   assert.equal(result.path.assetIndex, null);
 
@@ -812,10 +819,10 @@ test('plan() returns the resolved install plan', async () => {
   const plan = await installer.plan(makeVersion());
   assert.equal(plan.id, '1.99.9-tml');
   assert.equal(plan.client.dest, path.join(cacheDir, 'minecraft/client/1.99.9-tml/client.jar'));
-  assert.equal(plan.libraries.length, 2);
+  assert.equal(plan.libraries.length, 3);
   assert.equal(plan.natives.length, 1);
   assert.equal(plan.javaVersion.majorVersion, 17);
-  assert.equal(plan.os.name, 'linux');
+  assert.equal(plan.os.name, 'windows');
 });
 
 test('library download tasks inherit the source of their host', async () => {

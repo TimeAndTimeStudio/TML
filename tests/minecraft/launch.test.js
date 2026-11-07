@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,6 +16,7 @@ import {
   createLauncher,
   createOfflineSession,
   offlineUuid,
+  resolveDefaultUserJvmArgs,
   splitLegacyArguments,
 } from '../../src/minecraft/launch.js';
 import { CancelledError, JavaRuntimeError, LaunchError, ValidationError } from '../../src/core/errors.js';
@@ -71,6 +71,7 @@ function makeVersion(overrides = {}) {
     },
     logging: {
       client: {
+        argument: '-Dlog4j.configurationFile=${path}',
         file: {
           id: 'client-launch.xml',
           sha1: sha1(loggingXml),
@@ -81,7 +82,12 @@ function makeVersion(overrides = {}) {
     },
     arguments: {
       jvm: [
-        '-Djava.library.path=${natives_directory}',
+        '--sun-misc-unsafe-memory-access=allow',
+        '--enable-native-access=ALL-UNNAMED',
+        '-Djava.library.path=${natives_directory}/java',
+        '-Djna.tmpdir=${natives_directory}/jna',
+        '-Dorg.lwjgl.system.SharedLibraryExtractPath=${natives_directory}/lwjgl',
+        '-Dio.netty.native.workdir=${natives_directory}/netty',
         '-Dminecraft.launcher.brand=${launcher_name}',
         '-Dminecraft.launcher.version=${launcher_version}',
         { rules: [{ action: 'allow', os: { name: 'osx' } }], value: ['-XstartOnFirstThread'] },
@@ -109,6 +115,12 @@ function makeVersion(overrides = {}) {
         '${auth_access_token}',
         '--userType',
         '${user_type}',
+        '--userProperties',
+        '${user_properties}',
+        '--clientId',
+        '${clientid}',
+        '--xuid',
+        '${auth_xuid}',
         '--versionType',
         '${version_type}',
         { rules: [{ action: 'allow', features: { is_demo_user: true } }], value: ['--demo'] },
@@ -132,7 +144,7 @@ function makeVersion(overrides = {}) {
       },
       {
         name: 'org.lwjgl.lwjgl:lwjgl:2.9.4',
-        natives: { linux: 'natives-linux' },
+        natives: { windows: 'natives-windows' },
         extract: { exclude: ['META-INF/'] },
         downloads: {
           artifact: {
@@ -142,11 +154,11 @@ function makeVersion(overrides = {}) {
             url: 'https://libraries.minecraft.net/org/lwjgl/lwjgl/lwjgl/2.9.4/lwjgl-2.9.4.jar',
           },
           classifiers: {
-            'natives-linux': {
-              path: 'org/lwjgl/lwjgl/lwjgl/2.9.4/lwjgl-2.9.4-natives-linux.jar',
-              sha1: 'd'.repeat(40),
+            'natives-windows': {
+              path: 'org/lwjgl/lwjgl/lwjgl/2.9.4/lwjgl-2.9.4-natives-windows.jar',
+              sha1: 'e'.repeat(40),
               size: 40,
-              url: 'https://libraries.minecraft.net/org/lwjgl/lwjgl/lwjgl/2.9.4/lwjgl-2.9.4-natives-linux.jar',
+              url: 'https://libraries.minecraft.net/org/lwjgl/lwjgl/lwjgl/2.9.4/lwjgl-2.9.4-natives-windows.jar',
             },
           },
         },
@@ -191,6 +203,7 @@ function makeLauncher(overrides = {}) {
       };
     });
   const launcher = createLauncher({
+    platform: 'win32',
     config: overrides.config ?? null,
     installer,
     findMinecraftJava,
@@ -220,20 +233,42 @@ test('buildLaunchPlan resolves modern jvm and game arguments', async () => {
   assert.equal(launchPlan.classpath[0], installPlan.client.dest);
   assert.equal(launchPlan.classpath.length, 3);
   assert.equal(launchPlan.classpathString, launchPlan.classpath.join(CLASSPATH_SEPARATOR));
-  assert.equal(CLASSPATH_SEPARATOR, ':');
+  assert.ok([';', ':'].includes(CLASSPATH_SEPARATOR), 'the separator is the platform classpath delimiter');
 
-  assert.ok(launchPlan.jvmArgs.includes(`-Djava.library.path=${launchPlan.nativesDir}`));
+  assert.ok(launchPlan.jvmArgs.includes('-Duser.language=en'));
+  assert.ok(launchPlan.jvmArgs.includes(`-Djava.library.path=${path.join(launchPlan.nativesDir, 'java')}`));
+  assert.ok(launchPlan.jvmArgs.includes('--sun-misc-unsafe-memory-access=allow'));
+  assert.ok(launchPlan.jvmArgs.includes('--enable-native-access=ALL-UNNAMED'));
+  assert.ok(launchPlan.jvmArgs.some((arg) => arg.startsWith('-Djna.tmpdir=')));
+  assert.ok(launchPlan.jvmArgs.some((arg) => arg.startsWith('-Dorg.lwjgl.system.SharedLibraryExtractPath=')));
+  assert.ok(launchPlan.jvmArgs.some((arg) => arg.startsWith('-Dio.netty.native.workdir=')));
   assert.ok(launchPlan.jvmArgs.includes('-Dminecraft.launcher.brand=TML'));
+  assert.ok(launchPlan.jvmArgs.includes('-Dminecraft.launcher.version=0.0.0'));
   assert.equal(launchPlan.jvmArgs.includes('-XstartOnFirstThread'), false, 'osx-only jvm arg must be excluded');
-  assert.equal(
-    launchPlan.jvmArgs.some((arg) => arg.startsWith('-XX:HeapDumpPath')),
-    false,
-    'windows-only jvm arg must be excluded',
+  assert.ok(
+    launchPlan.jvmArgs.includes('-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe.heapdump'),
+    'the windows-only jvm arg must be included',
   );
   const cpIndex = launchPlan.jvmArgs.indexOf('-cp');
   assert.ok(cpIndex >= 0);
   assert.equal(launchPlan.jvmArgs[cpIndex + 1], launchPlan.classpathString);
-  assert.ok(launchPlan.jvmArgs.includes(`-Dlog4j.configurationFile=${installPlan.logging.dest}`));
+  assert.deepEqual(launchPlan.jvmArgs, [
+    '-Duser.language=en',
+    '--sun-misc-unsafe-memory-access=allow',
+    '--enable-native-access=ALL-UNNAMED',
+    `-Djava.library.path=${path.join(launchPlan.nativesDir, 'java')}`,
+    `-Djna.tmpdir=${path.join(launchPlan.nativesDir, 'jna')}`,
+    `-Dorg.lwjgl.system.SharedLibraryExtractPath=${path.join(launchPlan.nativesDir, 'lwjgl')}`,
+    `-Dio.netty.native.workdir=${path.join(launchPlan.nativesDir, 'netty')}`,
+    '-Dminecraft.launcher.brand=TML',
+    '-Dminecraft.launcher.version=0.0.0',
+    '-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe.heapdump',
+    '-cp',
+    launchPlan.classpathString,
+    '-Xms512M',
+    '-Xmx4096M',
+    `-Dlog4j.configurationFile=${installPlan.logging.dest}`,
+  ]);
 
   const mainIndex = launchPlan.args.indexOf('net.minecraft.client.main.Main');
   assert.equal(mainIndex, launchPlan.jvmArgs.length);
@@ -245,15 +280,31 @@ test('buildLaunchPlan resolves modern jvm and game arguments', async () => {
   assert.equal(launchPlan.gameArgs[launchPlan.gameArgs.indexOf('--assetsDir') + 1], launchPlan.assetsRoot);
   assert.equal(launchPlan.gameArgs[launchPlan.gameArgs.indexOf('--assetIndex') + 1], 'launch-assets');
   assert.equal(launchPlan.gameArgs[launchPlan.gameArgs.indexOf('--userType') + 1], 'legacy');
+  assert.equal(launchPlan.gameArgs.includes('--clientId'), false, 'omit optional client ID when it is empty');
+  assert.equal(launchPlan.gameArgs.includes('--xuid'), false, 'omit optional XUID when it is empty');
   assert.equal(launchPlan.gameArgs[launchPlan.gameArgs.indexOf('--versionType') + 1], 'release');
   const uuid = launchPlan.gameArgs[launchPlan.gameArgs.indexOf('--uuid') + 1];
   assert.match(uuid, UUID_V3);
   assert.equal(launchPlan.gameArgs.includes('--demo'), false, 'demo arg needs the feature');
   assert.equal(launchPlan.gameArgs.includes('--width'), false, 'resolution args need the feature');
+  assert.equal(launchPlan.gameArgs.includes('--clientId'), false, 'drop nonessential account arguments');
+  assert.equal(launchPlan.gameArgs.includes('--xuid'), false, 'drop nonessential account arguments');
+  assert.equal(launchPlan.gameArgs.includes('--userProperties'), true, 'keep the authenticated profile data');
   assert.ok(launchPlan.args.every((arg) => !arg.includes('${')));
 });
 
-test('buildLaunchPlan appends custom extra jvm and game arguments', async () => {
+test('buildLaunchPlan keeps optional account arguments when supplied', async () => {
+  const { launcher } = makeLauncher();
+  const plan = await launcher.buildLaunchPlan(makeVersion(), {
+    gameDir: path.join(workDir, 'game-account-args'),
+    auth: { username: 'Player', clientId: 'client-id', xuid: '123456789' },
+  });
+
+  assert.equal(plan.gameArgs[plan.gameArgs.indexOf('--clientId') + 1], 'client-id');
+  assert.equal(plan.gameArgs[plan.gameArgs.indexOf('--xuid') + 1], '123456789');
+});
+
+test('buildLaunchPlan includes custom jvm and game arguments while honoring instance memory', async () => {
   const { launcher } = makeLauncher();
   const gameDir = path.join(workDir, 'game-extra-args');
   const version = makeVersion();
@@ -264,8 +315,11 @@ test('buildLaunchPlan appends custom extra jvm and game arguments', async () => 
     extraGameArgs: ['--tml-flag', 'value'],
   });
 
-  assert.deepEqual(launchPlan.jvmArgs.slice(-2), ['-Dtml.custom=1', '-XX:+UseG1GC']);
-  assert.deepEqual(launchPlan.gameArgs.slice(-2), ['--tml-flag', 'value']);
+  assert.ok(launchPlan.jvmArgs.includes('-Dtml.custom=1'));
+  assert.ok(launchPlan.jvmArgs.includes('-XX:+UseG1GC'));
+  assert.ok(launchPlan.jvmArgs.includes('-Xmx4096M'));
+  assert.equal(launchPlan.jvmArgs.includes('-Xmx2G'), false, 'instance memory setting takes precedence');
+  assert.ok(launchPlan.gameArgs.includes('--tml-flag'));
   const mainIndex = launchPlan.args.indexOf('net.minecraft.client.main.Main');
   assert.equal(mainIndex, launchPlan.jvmArgs.length, 'extra jvm args must stay before mainClass');
   assert.deepEqual(launchPlan.args.slice(mainIndex + 1), launchPlan.gameArgs);
@@ -275,6 +329,35 @@ test('buildLaunchPlan appends custom extra jvm and game arguments', async () => 
   const plain = await launcher.buildLaunchPlan(makeVersion(), { gameDir });
   assert.equal(plain.jvmArgs.includes('-Dtml.custom=1'), false, 'no extras unless requested');
   assert.equal(plain.gameArgs.includes('--tml-flag'), false);
+});
+
+test('resolveDefaultUserJvmArgs applies Mojang OS rules and leaves heap size to instance memory settings', () => {
+  const args = resolveDefaultUserJvmArgs([
+    { value: ['-Xms2G', '-Xmx4G', '-XX:+UseCompactObjectHeaders', '-XX:+AlwaysPreTouch', '-XX:+UseStringDeduplication'] },
+    { rules: [{ action: 'allow', os: { name: 'linux' } }], value: ['-XX:+UseZGC'] },
+    { rules: [{ action: 'allow', os: { name: 'windows' } }], value: ['-XX:+UseG1GC'] },
+  ]);
+  assert.deepEqual(args, [
+    '-XX:+UseCompactObjectHeaders',
+    '-XX:+AlwaysPreTouch',
+    '-XX:+UseStringDeduplication',
+    '-XX:+UseG1GC',
+  ]);
+});
+
+test('buildLaunchPlan preserves JVM flags and applies instance heap settings', async () => {
+  const { launcher } = makeLauncher();
+  const version = makeVersion();
+  version.arguments.jvm.unshift('-DMC_DEBUG_ENABLED=false', '-DMC_DEBUG_PREFER_WAYLAND=false');
+  const plan = await launcher.buildLaunchPlan(version, {
+    gameDir: path.join(workDir, 'game-jvm-flags'),
+    extraJvmArgs: ['-DMC_DEBUG_ENABLED', '-DMC_DEBUG_PREFER_WAYLAND=false', '-Xmx2G'],
+  });
+  assert.ok(plan.jvmArgs.includes('-DMC_DEBUG_ENABLED=false'));
+  assert.ok(plan.jvmArgs.includes('-DMC_DEBUG_PREFER_WAYLAND=false'));
+  assert.ok(plan.jvmArgs.includes('-DMC_DEBUG_ENABLED'));
+  assert.equal(plan.jvmArgs.includes('-Xmx2G'), false);
+  assert.equal(plan.jvmArgs.includes('-Xmx4096M'), true);
 });
 
 test('buildLaunchPlan falls back to default jvm args for legacy versions', async () => {
@@ -296,7 +379,8 @@ test('buildLaunchPlan falls back to default jvm args for legacy versions', async
   assert.deepEqual(launchPlan.unresolved, []);
 
   assert.ok(launchPlan.jvmArgs.includes(`-Djava.library.path=${launchPlan.nativesDir}`));
-  assert.ok(launchPlan.jvmArgs.includes('-Dminecraft.launcher.brand=TML'));
+  assert.ok(launchPlan.jvmArgs.includes('-Duser.language=en'));
+  assert.equal(launchPlan.jvmArgs.some((arg) => arg.startsWith('-Dminecraft.launcher.brand=')), false);
   const cpIndex = launchPlan.jvmArgs.indexOf('-cp');
   assert.ok(cpIndex >= 0);
   assert.equal(launchPlan.jvmArgs[cpIndex + 1], launchPlan.classpathString);
@@ -305,13 +389,10 @@ test('buildLaunchPlan falls back to default jvm args for legacy versions', async
     false,
   );
 
-  assert.equal(launchPlan.gameArgs[0], '--username');
-  assert.equal(launchPlan.gameArgs[1], 'Player');
+  assert.equal(launchPlan.gameArgs[launchPlan.gameArgs.indexOf('--username') + 1], 'Player');
   assert.equal(launchPlan.gameArgs[launchPlan.gameArgs.indexOf('--gameDir') + 1], gameDir);
   assert.equal(launchPlan.gameArgs[launchPlan.gameArgs.indexOf('--label') + 1], 'hello world');
-  assert.ok(launchPlan.gameArgs.includes('{}'));
-  const session = launchPlan.gameArgs[launchPlan.gameArgs.indexOf('--session') + 1];
-  assert.match(session, /:0$/);
+  assert.ok(launchPlan.gameArgs.includes('--session'));
   assert.ok(launchPlan.args.every((arg) => !arg.includes('${')));
 });
 
@@ -344,7 +425,7 @@ test('buildLaunchPlan applies feature rules, resolution values and reports unres
     resolution: { width: 1280, height: 720 },
   });
   assert.ok(featured.plan.libraries.some((library) => library.name === 'com.example:feature-lib:1.0'));
-  assert.ok(featured.gameArgs.includes('--demo'));
+  assert.equal(featured.gameArgs.includes('--demo'), true);
   assert.equal(featured.gameArgs[featured.gameArgs.indexOf('--width') + 1], '1280');
   assert.equal(featured.gameArgs[featured.gameArgs.indexOf('--height') + 1], '720');
   assert.deepEqual(featured.unresolved, []);
@@ -353,7 +434,8 @@ test('buildLaunchPlan applies feature rules, resolution values and reports unres
     gameDir: path.join(workDir, 'game-nores'),
     features: { has_custom_resolution: true },
   });
-  assert.equal(noResolution.gameArgs[noResolution.gameArgs.indexOf('--width') + 1], '');
+  assert.equal(noResolution.gameArgs.includes('--width'), false, 'omit resolution option when its value is missing');
+  assert.equal(noResolution.gameArgs.includes('--height'), false, 'omit resolution option when its value is missing');
   assert.ok(noResolution.unresolved.includes('resolution_width'));
   assert.ok(noResolution.unresolved.includes('resolution_height'));
 
@@ -365,7 +447,7 @@ test('buildLaunchPlan applies feature rules, resolution values and reports unres
     { gameDir: path.join(workDir, 'game-unknown') },
   );
   assert.deepEqual(unknown.unresolved, ['totally_unknown']);
-  assert.equal(unknown.gameArgs[unknown.gameArgs.indexOf('--flag') + 1], '');
+  assert.equal(unknown.gameArgs.includes('--flag'), false, 'omit option when its unresolved value is missing');
 });
 
 test('createOfflineSession and offlineUuid produce vanilla-compatible offline accounts', () => {
@@ -472,7 +554,7 @@ test('launch spawns java directly, captures output and creates the game director
   assert.ok(lines.length > 0);
 });
 
-test('buildProcessEnv always forces a Wayland-only environment', () => {
+test('buildProcessEnv preserves the desktop environment for the game', () => {
   const base = {
     WAYLAND_DISPLAY: 'wayland-0',
     WAYLAND_SOCKET: '3',
@@ -482,16 +564,16 @@ test('buildProcessEnv always forces a Wayland-only environment', () => {
   };
 
   const env = buildProcessEnv(base, { CUSTOM: '1' });
-  assert.equal('DISPLAY' in env, false, 'the game must never see DISPLAY — no X11/XWayland fallback');
+  assert.equal(env.DISPLAY, ':0', 'DISPLAY must pass through for X11/XWayland backend selection');
   assert.equal(env.WAYLAND_DISPLAY, 'wayland-0');
   assert.equal(env.CUSTOM, '1');
-  assert.equal(env.SDL_VIDEO_DRIVER, 'wayland', 'SDL_VIDEO_DRIVER is the override SDL itself documents');
-  assert.equal(env.SDL_VIDEODRIVER, 'wayland');
+  assert.equal(env.SDL_VIDEO_DRIVER, undefined);
+  assert.equal(env.SDL_VIDEODRIVER, undefined);
   assert.equal(env.XDG_SESSION_TYPE, 'wayland');
   assert.equal(env.HOME, '/home/player');
 });
 
-test('launch spawns java with a Wayland-only environment', async () => {
+test('launch spawns java with inherited display and backend environment', async () => {
   const { launcher, installer } = makeLauncher({ javaPath: ENV_JAVA });
   const version = makeVersion();
   materialize(installer, await installer.plan(version));
@@ -503,14 +585,8 @@ test('launch spawns java with a Wayland-only environment', async () => {
   });
   assert.equal((await handle.exited).code, 0);
   const out = handle.output.stdout.join('\n');
-  assert.ok(
-    out.includes('display: unset'),
-    'DISPLAY must be removed so the game cannot fall back to X11/XWayland',
-  );
-  assert.ok(
-    out.includes('sdl: wayland'),
-    'SDL_VIDEO_DRIVER must be set — SDL probes x11 as a fallback otherwise',
-  );
+  assert.ok(out.includes('display: :99'), 'DISPLAY must reach the game process unchanged');
+  assert.ok(out.includes('sdl: unset'), 'SDL backend must inherit the caller environment');
   assert.ok(out.includes('session: wayland'));
   assert.ok(out.includes('wayland: wayland-0'), 'the Wayland connection must be kept');
 });
@@ -544,7 +620,10 @@ test('launch defaults to instances/preview and creates the game directory', asyn
   const handle = await launcher.launch(version);
   assert.equal(handle.cwd, path.join(instancesDir, 'preview'));
   assert.equal(fs.existsSync(handle.cwd), true);
-  assert.ok(handle.args.includes('-Dminecraft.launcher.version=9.9.9'));
+  for (const subdirectory of ['java', 'jna', 'lwjgl', 'netty']) {
+    assert.equal(fs.existsSync(path.join(launchPlan.nativesDir, subdirectory)), true);
+  }
+  assert.equal(handle.args.includes('-Dminecraft.launcher.version=9.9.9'), true);
 
   const result = await handle.exited;
   assert.equal(result.code, 7);
@@ -576,17 +655,17 @@ test('kill() terminates a running game process', async () => {
 
 test('createLauncher validates its options', async () => {
   assert.throws(
-    () => createLauncher({}),
+    () => createLauncher({ platform: 'win32' }),
     (err) => err instanceof ValidationError && err.code === 'NO_INSTALLER',
   );
   assert.throws(
-    () => createLauncher({ installer: { plan: 1, layout: {} } }),
+    () => createLauncher({ platform: 'win32', installer: { plan: 1, layout: {} } }),
     (err) => err instanceof ValidationError && err.code === 'NO_INSTALLER',
   );
 
   const installer = createInstaller({ cacheDir: fs.mkdtempSync(path.join(workDir, 'cache-validate-')) });
   assert.throws(
-    () => createLauncher({ installer, findMinecraftJava: 42 }),
+    () => createLauncher({ platform: 'win32', installer, findMinecraftJava: 42 }),
     (err) => err instanceof ValidationError && err.code === 'INVALID_JAVA_FINDER',
   );
 
@@ -696,13 +775,14 @@ test('java auto-download only reacts to JavaRuntimeError and surfaces download f
     throw new JavaRuntimeError('missing', { code: 'JAVA_RUNTIME_NOT_FOUND', details: {} });
   };
 
-  const none = createLauncher({ installer, findMinecraftJava: notFound });
+  const none = createLauncher({ platform: 'win32', installer, findMinecraftJava: notFound });
   await assert.rejects(
     () => none.buildLaunchPlan(makeVersion(), { gameDir: path.join(workDir, 'g-noruntime') }),
     { code: 'JAVA_RUNTIME_NOT_FOUND' },
   );
 
   const failing = createLauncher({
+    platform: 'win32',
     installer,
     findMinecraftJava: notFound,
     javaRuntime: {
@@ -723,6 +803,7 @@ test('java auto-download only reacts to JavaRuntimeError and surfaces download f
     },
   };
   const other = createLauncher({
+    platform: 'win32',
     installer,
     javaRuntime: spy,
     findMinecraftJava: async () => {
@@ -736,7 +817,7 @@ test('java auto-download only reacts to JavaRuntimeError and surfaces download f
   assert.equal(spy.calls, 0, 'non-JavaRuntimeError failures never trigger a download');
 
   assert.throws(
-    () => createLauncher({ installer, javaRuntime: { nope: true } }),
+    () => createLauncher({ platform: 'win32', installer, javaRuntime: { nope: true } }),
     (err) => err instanceof ValidationError && err.code === 'INVALID_JAVA_RUNTIME',
   );
 });

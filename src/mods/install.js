@@ -1,9 +1,7 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import fsp from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { ValidationError } from '../core/errors.js';
 import { ensureDir, pathExists, readJson, resolveWithin, writeJson } from '../core/filesystem.js';
@@ -72,11 +70,8 @@ export function normalizePackKind(kind) {
   return kind;
 }
 
-// การเช็คแบบขนาน — รันงานหลายตัวพร้อมกัน (hash + ดึงข้อมูลจาก Modrinth) ตามจำนวน CPU สูงสุดของเครื่อง
-const CHECK_CONCURRENCY = Math.max(
-  1,
-  typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length,
-);
+// Disk hashing and upstream checks use a bounded queue, including on many-core hosts.
+const CHECK_CONCURRENCY = 4;
 // cache ผล listVersions สั้น ๆ ให้การเช็คซ้ำ (auto-check, recheck หลังอัปเดต) ไม่ต้องยิง network ใหม่
 const VERSIONS_CACHE_TTL_MS = 3 * 60 * 1000;
 
@@ -211,6 +206,17 @@ export function createModInstaller(options = {}) {
       });
     }
 
+    const extension = packKind === 'mods' ? '.jar' : '.zip';
+    for (const file of files) {
+      const filename = safeModFilename(file.filename);
+      if (path.extname(filename).toLowerCase() !== extension) {
+        throw new ValidationError(`Files for ${packKind} must use ${extension}: ${filename}`, {
+          code: 'INVALID_PACK_FILE_TYPE',
+          details: { kind: packKind, filename, expectedExtension: extension },
+        });
+      }
+    }
+
     const targetDir = dirOf(instanceId, packKind);
     await ensureDir(targetDir);
 
@@ -341,14 +347,22 @@ export function createModInstaller(options = {}) {
       throw err;
     }
 
+    const registry = await readModRegistry(manager.paths(instanceId).dir).catch(() => ({}));
     const packs = [];
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       if (entry.name.startsWith('.')) continue;
+      const extension = packKind === 'mods' ? '.jar' : '.zip';
+      if (path.extname(entry.name).toLowerCase() !== extension) continue;
       const full = resolveWithin(targetDir, entry.name);
       try {
         const stats = await fsp.stat(full);
-        packs.push({ filename: entry.name, path: full, size: stats.size });
+        const tracked = registry[entry.name];
+        const projectId = (tracked?.kind ?? 'mods') === packKind ? tracked?.projectId : null;
+        packs.push({
+          filename: entry.name, path: full, size: stats.size,
+          ...(projectId ? { projectId } : {}),
+        });
       } catch {
         continue;
       }
@@ -518,7 +532,9 @@ export function createModInstaller(options = {}) {
           report('hash', hashed, Math.max(unknown.length, 1), `Hashing ${unknown.length} unverified file${unknown.length === 1 ? '' : 's'}…`);
           try {
             const hashes = await hashFile(file.path, ['sha1']);
-            byHash.set(String(hashes.sha1).toLowerCase(), file);
+            const hash = String(hashes.sha1).toLowerCase();
+            if (!byHash.has(hash)) byHash.set(hash, []);
+            byHash.get(hash).push(file);
           } catch {
             // อ่าน/-hash ไม่ได้ → ปล่อยเป็น unmatched
           }
@@ -531,21 +547,23 @@ export function createModInstaller(options = {}) {
             report('lookup', 1, 1, 'Hash lookup complete');
             const byVersion = new Map();
             for (const [hash, version] of Object.entries(found)) {
-              const file = byHash.get(hash);
-              if (!file || !version) continue;
-              const matchedFile =
-                (version.files ?? []).find((entry) => String(entry.sha1 ?? '').toLowerCase() === hash)
-                ?? (version.files ?? []).find((entry) => entry.filename === file.filename)
-                ?? null;
-              if (!byVersion.has(version)) byVersion.set(version, []);
-              byVersion.get(version).push({
-                filename: file.filename,
-                url: matchedFile?.url ?? null,
-                sha1: hash,
-                sha512: matchedFile?.sha512 ?? null,
-                size: file.size,
-              });
-              adopted.push(file.filename);
+              const matchingFiles = byHash.get(hash.toLowerCase());
+              if (!matchingFiles || !version) continue;
+              for (const file of matchingFiles) {
+                const matchedFile =
+                  (version.files ?? []).find((entry) => String(entry.sha1 ?? '').toLowerCase() === hash)
+                  ?? (version.files ?? []).find((entry) => entry.filename === file.filename)
+                  ?? null;
+                if (!byVersion.has(version)) byVersion.set(version, []);
+                byVersion.get(version).push({
+                  filename: file.filename,
+                  url: matchedFile?.url ?? null,
+                  sha1: hash,
+                  sha512: matchedFile?.sha512 ?? null,
+                  size: file.size,
+                });
+                adopted.push(file.filename);
+              }
             }
             for (const [version, records] of byVersion) {
               registry = await recordInstalledMods(instanceDir, version, records, { kind: packKind });
@@ -563,14 +581,14 @@ export function createModInstaller(options = {}) {
         }
       }
 
-      // เทียบกับเวอร์ชีล่าสุด — packs (resourcepacks/shaderpacks) ไม่กรองทั้ง loader และ gameVersions
-      // (Modrinth ไม่ได้ tag resource pack ตาม MC ที่ใช้งานได้จริง — tag ขาด ≠ ใช้ไม่ได้ ห้ามโชว์ NOT COMPATIBLE)
+      // เทียบกับเวอร์ชันที่ tag Minecraft ตรงกับ instance; เฉพาะ mods เท่านั้นที่ต้องกรอง loader เพิ่ม
       const canListVersions = typeof modrinthApi.listVersions === 'function';
       const versionLists = new Map();
       if (canListVersions) {
         // ดึงรายการเวอร์ชีของทุก project แบบขนาน (เดิม loop await ทีละ project ทีละ request → ช้ามากเมื่อมีหลาย mods)
-        const filterOptions =
-          packKind === 'mods' ? { gameVersions: [gameVersion], loaders: [meta.loader] } : {};
+        const filterOptions = packKind === 'mods'
+          ? { gameVersions: [gameVersion], loaders: [meta.loader] }
+          : { gameVersions: [gameVersion] };
         const projectIds = [
           ...new Set(
             files
@@ -580,7 +598,7 @@ export function createModInstaller(options = {}) {
         ];
         let fetched = 0;
         await mapConcurrent(projectIds, CHECK_CONCURRENCY, async (projectId) => {
-          const cacheKey = `${projectId}|${gameVersion}|${packKind === 'mods' ? meta.loader : ''}`;
+          const cacheKey = `${projectId}|${packKind}|${gameVersion}|${packKind === 'mods' ? meta.loader : ''}`;
           const cached = versionsCache.get(cacheKey);
           let versions = null;
           if (cached && Date.now() - cached.at < VERSIONS_CACHE_TTL_MS) {
@@ -663,15 +681,31 @@ export function createModInstaller(options = {}) {
           });
           continue;
         }
-        // เลือกเวอร์ชีใหม่สุด — mods เทียบ tag กับ MC เป้าหมายก่อน (tag ตรง = ปลอดภัยกว่า);
-        // packs (resourcepacks/shaderpacks) ไม่สนเวอร์ชั่นเลย → ใหม่สุดรวมเสมอ
-        const preferred =
-          packKind === 'mods'
-            ? versions.find(
-                (version) => Array.isArray(version.gameVersions) && version.gameVersions.includes(gameVersion),
-              )
-            : null;
-        const latest = preferred ?? versions[0];
+        // API เวอร์ชันอาจถูก mock/มีข้อมูลนอก filter — บังคับ tag MC ตรงอีกชั้นก่อนเลือก latest
+        const compatible = versions.filter(
+          (version) => Array.isArray(version.gameVersions) && version.gameVersions.includes(gameVersion),
+        );
+        if (compatible.length === 0) {
+          results.push({
+            ...base,
+            status: 'incompatible',
+            projectId: entry.projectId,
+            versionId: entry.versionId,
+            versionNumber: entry.versionNumber,
+            latest: null,
+            updateAvailable: false,
+          });
+          continue;
+        }
+        // Do not rely on the response array order: Modrinth's version-list API
+        // does not document ordering, and some projects return older builds first.
+        // Keep the API order as a stable tie-breaker for identical/missing dates.
+        const newestFirst = (items) => [...items].sort((a, b) => {
+          const aTime = Date.parse(a?.datePublished ?? '') || 0;
+          const bTime = Date.parse(b?.datePublished ?? '') || 0;
+          return bTime - aTime;
+        });
+        const latest = newestFirst(compatible)[0];
         const updateAvailable = latest.id !== entry.versionId;
         results.push({
           ...base,

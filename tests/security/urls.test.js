@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -64,6 +63,7 @@ test('third-party mirrors are rejected', () => {
     'https://objects.githubusercontent.com/abc/file',
     'https://drive.google.com/uc?id=abc',
     'https://bitbucket.org/Example/repo/downloads/mod.jar',
+    'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot',
   ];
 
   for (const url of mirrors) {
@@ -161,7 +161,6 @@ test('sources are exported as a frozen allowlist', () => {
 
 test('hosts the launcher never fetches are no longer allowed', () => {
   const removed = [
-    'https://textures.minecraft.net/texture/abc', // preview สกินอ่านจาก cache บนเครื่อง — ไม่ยิงไปโหลดจาก CDN
     'https://sessionserver.mojang.com/session/minecraft/hasJoined',
     'https://api.mojang.com/player',
     'https://authserver.mojang.com/authenticate',
@@ -199,7 +198,7 @@ test('inferSource maps official urls back to their source id', () => {
   assert.equal(inferSource('https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.15.7/fabric-loader-0.15.7.jar'), 'fabric');
   assert.equal(inferSource('https://meta.fabricmc.net/v2/versions/loader'), 'fabric');
   assert.equal(inferSource('https://cdn.modrinth.com/data/abc/mod.jar'), 'modrinth');
-  assert.equal(inferSource('https://login.microsoftonline.com/consumers/oauth2/v2.0/token'), 'microsoft');
+  assert.equal(inferSource('https://login.microsoftonline.com/consumers/oauth2/v2.0/token'), null);
   assert.equal(inferSource('https://evil.example.com/mod.jar'), null);
   assert.equal(inferSource('not a url'), null);
   assert.equal(inferSource(undefined), null);

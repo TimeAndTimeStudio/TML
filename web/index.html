@@ -5,35 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
   <title>TML — Time Mini Launcher</title>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <!-- ?v= เป็น placeholder — server เขียนทับจาก mtime ของ style.css/app.js ทุกครั้งที่เสิร์ฟ (ไม่ต้อง bump เอง) -->
   <link rel="stylesheet" href="/css/style.css?v=1" />
-  <!-- Inter TTF: ไฟล์จาก Google Fonts เก็บใน web/fonts/ — ไม่ยิงออกไปนอกเครื่อง (crossorigin = CORS mode ตามที่ browser ใช้โหลด font) -->
-  <link rel="preload" href="/fonts/inter-400.ttf" as="font" type="font/ttf" crossorigin />
-  <link rel="preload" href="/fonts/inter-700.ttf" as="font" type="font/ttf" crossorigin />
+  <link rel="preload" href="/fonts/kanit/Kanit-Regular.ttf" as="font" type="font/ttf" crossorigin />
+  <!-- Kanit is bundled locally for offline use. -->
+
+
 </head>
 <body>
   <div class="app">
     <div class="shell">
       <nav class="sidebar" aria-label="Main navigation">
-        <div class="brand">
-          <span class="brand-mark"><img src="/favicon.svg" alt="" width="34" height="34" /></span>
-          <span class="brand-name">TML <small>Time Mini Launcher</small></span>
-        </div>
         <p class="sidebar-label">Launcher</p>
         <button class="nav-item is-active" type="button" data-view="instances">
           <span class="nav-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="12.4" height="12.4" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="5" y="5" width="6" height="6" fill="currentColor"/></svg></span> Instances
         </button>
-        <button class="nav-item" type="button" data-view="servers">
-          <span class="nav-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.8" y="2.4" width="12.4" height="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="1.8" y="9" width="12.4" height="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="4.6" cy="4.7" r="1" fill="currentColor"/><circle cx="4.6" cy="11.3" r="1" fill="currentColor"/></svg></span> Servers
-        </button>
         <button class="nav-item" type="button" data-view="settings">
           <span class="nav-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.1" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.6v2.2M8 12.2v2.2M1.6 8h2.2M12.2 8h2.2M3.5 3.5l1.6 1.6M10.9 10.9l1.6 1.6M12.5 3.5l-1.6 1.6M5.1 10.9l-1.6 1.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span> Settings
         </button>
-        <button class="nav-item" type="button" id="accountsNavBtn">
-          <span class="nav-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.8a6.2 6.2 0 0 0 0 12.4Z" fill="currentColor"/></svg></span> Accounts
-        </button>
-
         <!-- รายการ instance ลัด (Modrinth-style quick switcher) — สร้างจาก JS -->
         <div class="side-quick" id="sideQuick" hidden>
           <p class="sidebar-label">Instances</p>
@@ -43,10 +32,6 @@
         <div class="sidebar-foot">
           <div class="side-status">
             <span class="pill pill-muted" id="versionPill">v—</span>
-          </div>
-          <div class="side-account">
-            <button class="pill pill-muted" id="accountPill" type="button">SIGN IN</button>
-            <button class="btn btn-ghost btn-small" id="skinOpenBtn" type="button" hidden>SKIN</button>
           </div>
         </div>
       </nav>
@@ -76,30 +61,6 @@
           </div>
         </section>
 
-        <section class="view" id="view-servers" data-view-panel="servers" hidden>
-          <div class="view-head view-head-row">
-            <div>
-              <h1>Servers</h1>
-            </div>
-            <div class="view-head-actions">
-              <button class="btn" id="createServerBtn" type="button">Create Server</button>
-              <button class="btn btn-primary" id="importServerBtn" type="button">Import Server</button>
-            </div>
-          </div>
-
-          <div class="instance-grid" id="serversGrid" hidden></div>
-
-          <div class="empty-state card" id="serversEmpty">
-            <div class="empty-glyph" aria-hidden="true"><svg width="40" height="40" viewBox="0 0 16 16"><rect x="1.8" y="2.4" width="12.4" height="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="1.8" y="9" width="12.4" height="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="4.6" cy="4.7" r="1" fill="currentColor"/><circle cx="4.6" cy="11.3" r="1" fill="currentColor"/></svg></div>
-            <h2>No servers yet</h2>
-            <p class="muted">Create a Fabric server or import a <code>.zip</code> you exported earlier — files install on first START.</p>
-            <div class="empty-actions">
-              <button class="btn btn-primary" type="button" data-open-create-server>Create Server</button>
-              <button class="btn" type="button" data-open-server-import>Import Server</button>
-            </div>
-          </div>
-        </section>
-
         <section class="view" id="view-instance" data-view-panel="instance" hidden>
           <div class="view-head view-head-row">
             <div class="instance-head-main">
@@ -121,15 +82,15 @@
             </div>
             <div class="view-head-actions">
               <button class="btn btn-primary" id="iPlayBtn" type="button">PLAY</button>
+              <button class="btn" id="iOpenFolderBtn" type="button">OPEN FOLDER</button>
               <button class="btn" id="iExportBtn" type="button">EXPORT</button>
               <button class="btn btn-danger" id="iDeleteBtn" type="button">DELETE</button>
             </div>
           </div>
 
-          <!-- แท็บใต้หัวหน้า (Modrinth instance page) — OVERVIEW/START ขึ้นกับชนิด (JS สลับ hidden) -->
+          <!-- แท็บใต้หัวหน้า (Modrinth instance page) — JS สลับ hidden -->
           <div class="tab-bar">
             <button class="tab" id="iOverviewBtn" type="button">OVERVIEW</button>
-            <button class="tab" id="iStartBtn" type="button" hidden>START</button>
             <button class="tab" id="iModsBtn" type="button">MODS</button>
             <button class="tab" id="iResourcesBtn" type="button">RESOURCES</button>
             <button class="tab" id="iShadersBtn" type="button">SHADERS</button>
@@ -146,26 +107,11 @@
           <div class="card" id="instancePanelOverview">
             <h3>Overview</h3>
             <dl class="facts" id="instanceFacts"></dl>
-          </div>
-
-          <!-- แท็บ START ของ server: สถานะ + EULA + ปุ่ม start/stop + console สด -->
-          <div class="card" id="instancePanelStart" hidden>
-            <h3>Server <span class="pill pill-muted" id="srvStatePill">—</span></h3>
-            <dl class="facts" id="srvFacts"></dl>
-            <div class="srv-eula" id="srvEulaBanner" hidden>
-              <p>You must accept the Minecraft EULA before the server can start.</p>
-              <button class="btn btn-primary btn-small" id="srvEulaBtn" type="button">ACCEPT EULA</button>
+            <div class="panel-toolbar client-log-heading">
+              <h3>Client log</h3>
+              <button class="btn btn-small" id="clientLogClearBtn" type="button">CLEAR</button>
             </div>
-            <div class="panel-toolbar">
-              <button class="btn btn-primary" id="srvStartBtn" type="button">START</button>
-              <button class="btn" id="srvStopBtn" type="button" hidden>STOP</button>
-              <span class="muted small" id="srvStatus" hidden></span>
-            </div>
-            <pre class="server-console" id="srvConsole" aria-label="Server console output"></pre>
-            <div class="panel-toolbar">
-              <button class="btn btn-small" id="srvClearBtn" type="button">CLEAR</button>
-              <span class="muted small">Live output from the server process — the server accepts commands here.</span>
-            </div>
+            <pre class="server-console client-console" id="clientConsole" aria-label="Client log output"></pre>
           </div>
 
           <div class="card" id="instancePanelMods" hidden>
@@ -180,6 +126,7 @@
               <div class="check-progress-track"><div class="check-progress-fill" id="modCheckProgressFill"></div></div>
               <span class="check-progress-label" id="modCheckProgressLabel"></span>
             </div>
+            <label class="installed-search"><input type="text" id="modInstalledSearch" aria-label="Search installed mods" placeholder="Search installed mods…" autocomplete="off" /></label>
             <div class="mod-list" id="modList"><p class="muted">Loading mods…</p></div>
           </div>
 
@@ -209,6 +156,7 @@
               <div class="check-progress-track"><div class="check-progress-fill" id="rpCheckProgressFill"></div></div>
               <span class="check-progress-label" id="rpCheckProgressLabel"></span>
             </div>
+            <label class="installed-search"><input type="text" id="rpInstalledSearch" aria-label="Search installed resource packs" placeholder="Search installed resource packs…" autocomplete="off" /></label>
             <div class="mod-list" id="rpList"><p class="muted">No resource packs installed in this instance.</p></div>
           </div>
 
@@ -238,6 +186,7 @@
               <div class="check-progress-track"><div class="check-progress-fill" id="spCheckProgressFill"></div></div>
               <span class="check-progress-label" id="spCheckProgressLabel"></span>
             </div>
+            <label class="installed-search"><input type="text" id="spInstalledSearch" aria-label="Search installed shaders" placeholder="Search installed shaders…" autocomplete="off" /></label>
             <div class="mod-list" id="spList"><p class="muted">No shaders installed in this instance.</p></div>
           </div>
 
@@ -312,13 +261,9 @@
               <label class="field">
                 <span class="field-label">Extra JVM arguments</span>
                 <input type="text" id="isJvmArgs" spellcheck="false"
-                  placeholder="-XX:+UseG1GC -Dfoo=bar" />
+                  placeholder="-XX:+UseCompactObjectHeaders -XX:+AlwaysPreTouch -XX:+UseStringDeduplication -XX:+UseZGC" />
               </label>
-              <p class="muted small">Space separated; wrap values that contain spaces in quotes.</p>
-              <label class="field" id="isPortField" hidden>
-                <span class="field-label">Server port</span>
-                <input type="text" id="isPort" inputmode="numeric" spellcheck="false" placeholder="25565" />
-              </label>
+              <p class="muted small">Mojang default-user-jvm flags load here when available. Save this field to apply them; removed flags are not passed to Java. Space separated; wrap values that contain spaces in quotes.</p>
               <table class="table">
                 <tbody>
                   <tr><th>Instance id</th><td id="isId">—</td></tr>
@@ -434,7 +379,7 @@
           <div class="card">
             <h3>Data directory</h3>
             <p class="muted small">
-              Move every instance, account, export and setting to a new folder. TML keeps using
+              Move every instance, export and setting to a new folder. TML keeps using
               the current folder until you restart it.
             </p>
             <form id="dataDirForm">
@@ -449,13 +394,14 @@
 
           <div class="grid grid-2">
             <div class="card">
-              <h3>Java Runtime <span class="pill pill-muted" id="javaRtPill">—</span></h3>
+              <h3>Java Runtime <span class="pill pill-muted" id="javaRtPill">…</span></h3>
               <p class="muted small">
                 Microsoft Java runtimes for Linux — PLAY uses the selected downloaded version.
               </p>
+              <p class="muted small" id="javaRtHint" hidden></p>
               <div class="dropdown" id="javaRtDropdown">
                 <button type="button" class="dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">
-                  <span class="dropdown-value">—</span>
+                  <span class="dropdown-value">Select a runtime…</span>
                 </button>
                 <div class="dropdown-menu" hidden>
                   <ul class="dropdown-list" role="listbox"></ul>
@@ -465,26 +411,26 @@
               <input type="hidden" id="javaRtValue" value="" />
               <table class="table">
                 <tbody>
-                  <tr><th>Java</th><td id="javaRtVersion">—</td></tr>
-                  <tr><th>Released</th><td id="javaRtReleased">—</td></tr>
-                  <tr><th>Status</th><td id="javaRtState">—</td></tr>
+                  <tr><th>Java</th><td id="javaRtVersion">…</td></tr>
+                  <tr><th>Released</th><td id="javaRtReleased">…</td></tr>
+                  <tr><th>Status</th><td id="javaRtState">…</td></tr>
                 </tbody>
               </table>
               <div class="java-card-actions">
-                <button class="btn btn-primary" id="javaRtActionBtn" type="button">—</button>
+                <button class="btn btn-primary" id="javaRtActionBtn" type="button">SELECT</button>
                 <button class="btn btn-danger" id="javaRtDeleteBtn" type="button" hidden>DELETE</button>
               </div>
               <p class="muted small import-error" id="javaRtError" hidden></p>
             </div>
             <div class="card">
-              <h3>Accounts</h3>
-              <p class="muted">Sign in with a Microsoft account from the sidebar.</p>
+              <h3>Player name</h3>
+              <p class="muted">Offline username used when launching a game instance.</p>
               <form id="offlineNameForm">
                 <label class="field">
                   <span class="field-label">Offline name</span>
                   <input type="text" id="cfgOfflineName" maxlength="16" spellcheck="false" autocomplete="off" placeholder="Player" />
                 </label>
-                <p class="muted small">Used while signed out — 3–16 characters (a–z, A–Z, 0–9, _). Hidden once you sign in.</p>
+                <p class="muted small">3–16 characters (a–z, A–Z, 0–9, _).</p>
                 <button class="btn btn-primary" type="submit">SAVE</button>
               </form>
               <p class="muted small import-error" id="offlineNameError" hidden></p>
@@ -516,11 +462,11 @@
               </tbody>
             </table>
             <p class="muted small">
-              Opened in your own browser during sign-in:
-              <strong>microsoft.com/link</strong>.
-              Never contacted: <strong>textures.minecraft.net</strong> (skins
-              are read from the local cache) and <strong>account.mojang.com</strong>
-              (only a comment inside <code>eula.txt</code>).
+              TML contacts <strong>piston-meta.mojang.com</strong> (Minecraft
+              version metadata and game files), <strong>maven.fabricmc.net</strong>
+              and <strong>meta.fabricmc.net</strong> (Fabric loader), and
+              <strong>api.modrinth.com</strong> (mods, resource packs and
+              shaders) — each only when the matching feature runs.
               The running game makes its own connections, as any Minecraft
               client does.
             </p>
@@ -668,95 +614,11 @@
     </div>
   </div>
 
-  <div class="modal-backdrop" id="authModal" hidden>
-    <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
-      <h2 id="authTitle">Microsoft Account</h2>
-
-      <div id="authSignedOut" hidden>
-
-        <div id="authCodeStep" hidden>
-          <div class="auth-code-row">
-            <div class="auth-code" id="authUserCode">————</div>
-            <button class="btn auth-copy-btn" id="authCopyBtn" type="button">COPY</button>
-          </div>
-          <p class="muted">
-            A new TML window opens — the code is copied to your clipboard,
-            paste it there. If no window appeared, open
-            <span id="authLink">microsoft.com/link</span>
-            and paste the code:
-          </p>
-          <p class="small muted" id="authMessage"></p>
-          <p class="small auth-waiting" id="authWaiting" hidden>Waiting for approval…</p>
-        </div>
-
-        <p class="muted small import-error" id="authError" hidden></p>
-
-        <div class="modal-actions">
-          <button class="btn" id="authCancelBtn" type="button">CANCEL</button>
-          <button class="btn btn-primary" id="authStartBtn" type="button">START SIGN IN</button>
-        </div>
-      </div>
-
-      <div id="authSignedIn" hidden>
-        <dl class="facts" id="authFacts"></dl>
-        <p class="muted small import-error" id="authSessionError" hidden></p>
-
-        <p class="muted small">Change your skin from the <strong>SKIN</strong> button next to your name in the sidebar.</p>
-
-        <div class="modal-actions">
-          <button class="btn" id="authCloseBtn" type="button">CLOSE</button>
-          <button class="btn btn-danger" id="authSignOutBtn" type="button">SIGN OUT</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="modal-backdrop" id="skinOverlay" hidden>
-    <div class="modal card skin-overlay" role="dialog" aria-modal="true" aria-labelledby="skinOverlayTitle">
-      <h2 id="skinOverlayTitle">Skin</h2>
-      <p class="muted small" id="skinOverlayMeta">Loading the skin in use…</p>
-      <canvas id="skinOverlayCanvas" width="440" height="400"></canvas>
-
-      <div class="skin-file-row">
-        <button class="btn choose-file-btn" type="button" id="skinChooseBtn">
-          <svg class="choose-file-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M8 10.5V2.75M5 5.25 8 2.25l3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-            <path d="M2.75 9.75v3.5h10.5v-3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-          <span>CHOOSE FILE</span>
-        </button>
-        <span class="muted small" id="skinFileName">No file chosen</span>
-        <button class="btn btn-primary" id="skinUploadBtn" type="button" disabled>UPLOAD SKIN</button>
-        <input type="file" id="skinOverlayFile" accept="image/png,.png" hidden />
-      </div>
-
-      <div class="field">
-          <span class="field-label">Model</span>
-        <div class="dropdown" id="skinVariantDropdown">
-          <button type="button" class="dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">
-            <span class="dropdown-value">Classic (wide arms)</span>
-          </button>
-          <div class="dropdown-menu" hidden>
-            <ul class="dropdown-list" role="listbox"></ul>
-            <p class="dropdown-empty muted small">No entries</p>
-          </div>
-        </div>
-        <input type="hidden" id="skinVariantValue" value="classic" />
-      </div>
-
-      <p class="muted small import-error" id="skinError" hidden></p>
-
-      <div class="modal-actions skin-actions">
-        <button class="btn btn-danger" id="skinResetBtn" type="button">RESET TO DEFAULT</button>
-        <button class="btn" id="skinOverlayClose" type="button">CLOSE</button>
-      </div>
-    </div>
-  </div>
-
   <div class="modal-backdrop" id="versionPickModal" hidden>
     <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="versionPickTitle">
       <h2 id="versionPickTitle">Choose a version</h2>
       <p class="muted small" id="versionPickMeta">—</p>
+      <p class="mod-side-warning version-pick-side-warning" id="versionPickSideWarning" role="alert" hidden></p>
       <div class="version-pick-list" id="versionPickList"></div>
       <p class="muted small import-error" id="versionPickError" hidden></p>
       <div class="modal-actions">

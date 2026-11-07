@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import fsp from 'node:fs/promises';
 import {
@@ -13,7 +12,10 @@ import { pathExists, readJson, removePath, writeJson } from '../core/filesystem.
 import { generateInstanceId, createInstance } from './create.js';
 import { resolveInstancePaths } from './isolation.js';
 import { resolveLaunchVersion } from './launch.js';
+import { resolveDefaultUserJvmArgs } from '../minecraft/launch.js';
 import { validateInstanceMeta, validateInstanceName, validateInstanceId } from './validate.js';
+
+const CONSOLE_MAX_LINES = 2000;
 
 function notFound(id) {
   return new NotFoundError(`Instance not found: ${id}`, {
@@ -29,8 +31,6 @@ const PATCHABLE_FIELDS = Object.freeze([
   'extraJvmArgs',
   'extraGameArgs',
   'minecraftVersion',
-  'port',
-  'eulaAccepted',
 ]);
 
 export function createInstanceManager(options = {}) {
@@ -49,7 +49,32 @@ export function createInstanceManager(options = {}) {
   const running = new Map();
   const runningSince = new Map();
   const launchProgress = new Map();
+  const consoles = new Map();
+  const consoleGenerations = new Map();
+  const defaultJvmArgsCache = new Map();
   let playtimeQueue = Promise.resolve();
+
+  function consoleFor(id) {
+    let entry = consoles.get(id);
+    if (!entry) {
+      entry = { lines: [], seq: 0, generation: consoleGenerations.get(id) ?? 0 };
+      consoles.set(id, entry);
+    }
+    return entry;
+  }
+
+  function pushConsoleLine(id, text, stream = 'stdout') {
+    const entry = consoleFor(id);
+    entry.seq += 1;
+    entry.lines.push({ seq: entry.seq, text: String(text), stream });
+    if (entry.lines.length > CONSOLE_MAX_LINES) entry.lines.splice(0, entry.lines.length - CONSOLE_MAX_LINES);
+  }
+
+  function resetConsole(id) {
+    const generation = (consoleGenerations.get(id) ?? 0) + 1;
+    consoleGenerations.set(id, generation);
+    consoles.set(id, { lines: [], seq: 0, generation });
+  }
 
   function paths(id) {
     return resolveInstancePaths(instancesDir, id);
@@ -144,10 +169,11 @@ export function createInstanceManager(options = {}) {
     if (patch.name !== undefined) next.name = patch.name;
     if (patch.java !== undefined) next.java = patch.java;
     if (patch.memory !== undefined) next.memory = patch.memory;
-    if (patch.extraJvmArgs !== undefined) next.extraJvmArgs = patch.extraJvmArgs;
+    if (patch.extraJvmArgs !== undefined) {
+      next.extraJvmArgs = patch.extraJvmArgs;
+      next.extraJvmArgsConfigured = true;
+    }
     if (patch.extraGameArgs !== undefined) next.extraGameArgs = patch.extraGameArgs;
-    if (patch.port !== undefined) next.port = patch.port;
-    if (patch.eulaAccepted !== undefined) next.eulaAccepted = patch.eulaAccepted;
     if (patch.minecraftVersion !== undefined) {
       // เปลี่ยนเวอร์ชั่น → จำเวอร์ชั่นก่อนหน้าไว้ให้ UI ย้อนกลับได้ (previousMinecraftVersion ไม่ใช่ field ที่ client ส่งเอง)
       if (patch.minecraftVersion !== meta.minecraftVersion) {
@@ -161,10 +187,9 @@ export function createInstanceManager(options = {}) {
       updated.java !== meta.java ||
       updated.minecraftVersion !== meta.minecraftVersion ||
       updated.previousMinecraftVersion !== (meta.previousMinecraftVersion ?? null) ||
-      updated.port !== meta.port ||
-      updated.eulaAccepted !== meta.eulaAccepted ||
       JSON.stringify(updated.memory) !== JSON.stringify(meta.memory) ||
       JSON.stringify(updated.extraJvmArgs) !== JSON.stringify(meta.extraJvmArgs ?? []) ||
+      updated.extraJvmArgsConfigured !== (meta.extraJvmArgsConfigured === true) ||
       JSON.stringify(updated.extraGameArgs) !== JSON.stringify(meta.extraGameArgs ?? []);
     if (!changed) return meta;
     await writeJson(paths(id).metaFile, updated);
@@ -217,6 +242,8 @@ export function createInstanceManager(options = {}) {
     const { dir, metaFile } = paths(id);
     if (!(await pathExists(metaFile))) throw notFound(id);
     await removePath(dir);
+    consoles.delete(id);
+    consoleGenerations.delete(id);
     logger?.info('instance deleted', { id });
     return { id, deleted: true };
   }
@@ -247,6 +274,7 @@ export function createInstanceManager(options = {}) {
       if (Number.isFinite(info.percent)) progress.percent = info.percent;
     };
     launchProgress.set(id, progress);
+    resetConsole(id);
 
     try {
       const resolved = await resolveLaunchVersion(meta, { fabric, logger });
@@ -271,9 +299,16 @@ export function createInstanceManager(options = {}) {
         auth: opts.auth,
         features: opts.features,
         resolution: opts.resolution,
+        memory: meta.memory,
         signal: opts.signal,
-        onOutput: opts.onOutput,
+        onOutput: (line, stream) => {
+          pushConsoleLine(id, line, stream);
+          opts.onOutput?.(line, stream);
+        },
         onProgress: report,
+        // Mojang defaults are loaded into the editable settings field by the
+        // UI. Launch only what the player saved there, so removing a default
+        // flag never gets silently undone here.
         extraJvmArgs: meta.extraJvmArgs ?? [],
         extraGameArgs: meta.extraGameArgs ?? [],
       });
@@ -329,6 +364,37 @@ export function createInstanceManager(options = {}) {
       return { instanceId: id, launching: false, stage: 'idle', percent: 0, loaded: 0, total: 0 };
     }
     return { launching: true, ...entry };
+  }
+
+  function readConsole(id, since = 0, generation = null) {
+    validateInstanceId(id);
+    const entry = consoleFor(id);
+    const from = Number.isInteger(since) && since > 0 ? since : 0;
+    const sessionChanged = Number.isInteger(generation) && generation !== entry.generation;
+    return {
+      id,
+      running: running.has(id),
+      launching: launchProgress.has(id),
+      generation: entry.generation,
+      lines: sessionChanged ? [...entry.lines] : entry.lines.filter((line) => line.seq > from),
+      nextSince: entry.seq,
+    };
+  }
+
+  async function getDefaultJvmArgs(id) {
+    const meta = await readMeta(id);
+    const cacheKey = `${meta.minecraftVersion}:${meta.fabricLoaderVersion ?? ''}`;
+    if (defaultJvmArgsCache.has(cacheKey)) return [...defaultJvmArgsCache.get(cacheKey)];
+    if (!installer || typeof installer.plan !== 'function') return [];
+
+    const installedVersion = meta.fabricLoaderVersion && fabric && typeof fabric.versionFor === 'function'
+      ? await fabric.versionFor(id)
+      : null;
+    const version = installedVersion ?? meta.minecraftVersion;
+    const plan = await installer.plan(version);
+    const args = resolveDefaultUserJvmArgs(plan.arguments?.['default-user-jvm'] ?? []);
+    defaultJvmArgsCache.set(cacheKey, args);
+    return [...args];
   }
 
   async function stop(id, signal = 'SIGTERM') {
@@ -387,6 +453,8 @@ export function createInstanceManager(options = {}) {
     delete: remove,
     launch,
     getLaunchProgress,
+    readConsole,
+    getDefaultJvmArgs,
     stop,
     status,
     paths,

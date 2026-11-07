@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-07 14:20 +0700
-// License: GPL-3.0-or-later
 
 import fsp from 'node:fs/promises';
 

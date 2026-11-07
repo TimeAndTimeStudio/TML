@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import path from 'node:path';
 import process from 'node:process';
 import { readFile } from 'node:fs/promises';
 import { loadConfig } from './core/config.js';
 import { createLogger } from './core/logger.js';
-import { ensureDir, pathExists } from './core/filesystem.js';
-import { assertLinuxPlatform } from './core/platform.js';
-import { JavaRuntimeError } from './core/errors.js';
+import { ensureDir } from './core/filesystem.js';
+import { assertSupportedPlatform } from './core/platform.js';
 import { createApiRouter } from './server/routes.js';
 import { createTmlServer } from './server/server.js';
 import { createMinecraftApi } from './minecraft/api.js';
@@ -19,25 +17,22 @@ import { createLauncher } from './minecraft/launch.js';
 import { createInstanceManager } from './instance/manager.js';
 import { createInstanceExporter } from './instance/export.js';
 import { createInstanceImporter } from './instance/import.js';
-import { createGameServerManager } from './instance/gameserver.js';
+import { installBundledInstances } from './instance/bundled.js';
 import { createModInstaller } from './mods/install.js';
 import { createFabricInstaller } from './fabric/installer.js';
 import { createFabricApi } from './fabric/api.js';
 import { createModrinthApi } from './modrinth/api.js';
 import { createJavaRuntimes } from './java/runtimes.js';
 import { defaultJavaRoots, findMinecraftJava } from './java/runtime.js';
-import { createAuthProvider } from './auth/provider.js';
-import { createTokenStore, SESSION_FILE_NAME } from './auth/token-store.js';
 import { writeZipFile } from './archive/zip.js';
 
-const SHUTDOWN_TIMEOUT_MS = 5000;
+const SHUTDOWN_TIMEOUT_MS = 35000;
 const KNOWN_FLAGS = new Set(['-h', '--help', '-v', '--version']);
 
 async function packageVersion() {
   try {
-    const raw = await readFile(new URL('../package.json', import.meta.url), 'utf8');
-    const parsed = JSON.parse(raw);
-    return typeof parsed.version === 'string' ? parsed.version : '0.0.0';
+    const raw = await readFile(new URL('../APP_VERSION', import.meta.url), 'utf8');
+    return raw.trim() || '0.0.0';
   } catch {
     return '0.0.0';
   }
@@ -56,12 +51,11 @@ async function printHelp() {
       '',
       'Environment:',
       '  TML_HOST           Bind host (default 127.0.0.1)',
-      '  TML_PORT           Bind port (default 8620)',
+      '  TML_PORT           Bind port (default 8653)',
       '  TML_LOG_LEVEL      debug | info | warn | error | silent (default warn)',
-      '  TML_DATA_DIR       Data directory (default ~/.tml-launcher)',
-      '  TML_MSA_CLIENT_ID  Microsoft Entra (Azure) application client ID (GUID)',
+      '  TML_DATA_DIR       Data directory (default %USERPROFILE%\\.tml-launcher)',
       '',
-      'Requirements: Linux, Node.js >= 18.17',
+      'Requirements: Windows, Node.js >= 18.17',
       '',
     ].join('\n')
   );
@@ -95,7 +89,7 @@ async function main() {
     return;
   }
 
-  assertLinuxPlatform();
+  assertSupportedPlatform();
   const config = loadConfig();
   await ensureDataDirs(config);
 
@@ -109,6 +103,12 @@ async function main() {
     version: config.version,
     node: process.version,
     dataDir: config.paths.dataDir,
+  });
+
+  await installBundledInstances({
+    dataDir: config.paths.dataDir,
+    instancesDir: config.paths.instancesDir,
+    logger,
   });
 
   const minecraft = createMinecraftApi({ config, logger });
@@ -137,27 +137,7 @@ async function main() {
     return findMinecraftJava({ ...options, roots });
   }
 
-  // Java สำหรับรัน/ลง server = runtime ที่เลือกไว้ใน Settings (ต้องดาวน์โหลดแล้ว เหมือน PLAY ของ client)
-  async function requireChosenJava() {
-    const chosen = javaRuntimes.getChosen();
-    const runtimes = chosen ? await javaRuntimes.list() : [];
-    const picked = chosen ? runtimes.find((runtime) => runtime.name === chosen) ?? null : null;
-    if (!picked || picked.downloaded !== true) {
-      throw new JavaRuntimeError(
-        'No downloaded Java runtime is selected — open Settings → Java Runtime, download a version and select it, then press START again',
-        { code: 'JAVA_RUNTIME_UNAVAILABLE', status: 409, details: { chosen } },
-      );
-    }
-    const exe = path.join(config.paths.javaDir, chosen, 'bin', 'java');
-    if (!(await pathExists(exe))) {
-      throw new JavaRuntimeError('The selected Java runtime is missing its java binary', {
-        code: 'JAVA_RUNTIME_UNAVAILABLE',
-        status: 409,
-        details: { chosen },
-      });
-    }
-    return { path: exe };
-  }
+  // Java สำหรับรัน instance (client) = runtime ที่เลือกไว้ใน Settings (ต้องดาวน์โหลดแล้ว)
 
   const launcher = createLauncher({
     config,
@@ -169,18 +149,10 @@ async function main() {
   const manager = createInstanceManager({ config, logger, installer: mcInstaller, launcher, fabric });
   managerRef = manager;
 
-  const gameserver = createGameServerManager({ config, logger, manager, getJava: requireChosenJava });
-
   const modrinthInstaller = createModInstaller({ manager, logger });
   const exporter = createInstanceExporter({ manager, writeZip: writeZipFile, exportsDir: config.paths.exportsDir, logger });
   const importer = createInstanceImporter({ manager, tempRoot: config.paths.tmpDir, logger });
 
-  const auth = createAuthProvider({
-    clientId: config.auth.clientId,
-    source: config.auth.source,
-    logger,
-  });
-  const account = createTokenStore({ file: path.join(config.paths.dataDir, SESSION_FILE_NAME), logger });
   const modrinth = createModrinthApi({ logger });
   const fabricMeta = createFabricApi({ logger });
 
@@ -188,9 +160,7 @@ async function main() {
     config,
     logger,
     minecraft,
-    instance: { manager, exporter, importer, installer: modrinthInstaller, gameserver },
-    auth,
-    account,
+    instance: { manager, exporter, importer, installer: modrinthInstaller },
     modrinth,
     fabric: fabricMeta,
     java: javaRuntimes,
@@ -208,15 +178,6 @@ async function main() {
       process.exit(exitCode || 1);
     }, SHUTDOWN_TIMEOUT_MS);
     timer.unref();
-
-    // server ที่ยังรันอยู่ต้องถูกดับก่อน — ไม่งั้น java เป็น orphan ค้างหลัง launcher ปิด
-    await Promise.race([
-      gameserver.shutdown(),
-      new Promise((resolve) => {
-        const stopTimer = setTimeout(resolve, 4000);
-        stopTimer.unref();
-      }),
-    ]).catch(() => {});
 
     if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
     server.close(() => {

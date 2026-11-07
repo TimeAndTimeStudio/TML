@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import { SourceNotAllowedError, ValidationError } from '../core/errors.js';
 
@@ -19,6 +18,7 @@ export const OFFICIAL_SOURCES = Object.freeze({
       'resources.download.minecraft.net',
       'libraries.minecraft.net',
       'launcher.mojang.com',
+      'textures.minecraft.net',
     ]),
   }),
   fabric: Object.freeze({
@@ -33,16 +33,6 @@ export const OFFICIAL_SOURCES = Object.freeze({
     id: 'modrinth',
     label: 'Official Modrinth',
     hosts: Object.freeze(['api.modrinth.com', 'cdn.modrinth.com']),
-  }),
-  microsoft: Object.freeze({
-    id: 'microsoft',
-    label: 'Microsoft / Xbox (Official Authentication)',
-    hosts: Object.freeze([
-      'login.microsoftonline.com',
-      'user.auth.xboxlive.com',
-      'xsts.auth.xboxlive.com',
-      'api.minecraftservices.com',
-    ]),
   }),
 });
 

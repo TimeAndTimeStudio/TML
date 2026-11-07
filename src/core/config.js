@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,7 +14,7 @@ const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error', 'silent']);
 
 const DEFAULTS = {
   host: '127.0.0.1',
-  port: 8620,
+  port: 8653,
   logLevel: 'warn',
 };
 
@@ -124,8 +123,7 @@ function isPlainObject(value) {
 function readVersion() {
   if (cachedVersion) return cachedVersion;
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8'));
-    cachedVersion = typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+    cachedVersion = fs.readFileSync(path.join(PROJECT_ROOT, 'APP_VERSION'), 'utf8').trim() || '0.0.0';
   } catch {
     cachedVersion = '0.0.0';
   }
@@ -181,9 +179,6 @@ function normalizeLevel(value) {
   return level;
 }
 
-const CLIENT_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-// ค่าเริ่มต้น = Azure app registration ของ launcher เอง — ไม่มี client ID ของบุคคลที่สามฝังอยู่
-export const DEFAULT_MSA_CLIENT_ID = 'ea2a1c7b-7e70-4b72-a1a6-beb8488e12a8';
 const JAVA_RUNTIME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 function normalizeJavaRuntime(value) {
@@ -205,19 +200,6 @@ function normalizeOfflineName(value) {
   return trimmed;
 }
 
-function normalizeClientId(value) {
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw new ConfigError('clientId must be a non-empty Application (client) ID string');
-  }
-  const trimmed = value.trim();
-  if (!CLIENT_ID_PATTERN.test(trimmed)) {
-    throw new ConfigError(
-      'clientId must be an Application (client) ID GUID like 00000000-0000-0000-0000-000000000000',
-    );
-  }
-  return trimmed;
-}
-
 export function loadConfig({ env = process.env } = {}) {
   const dataDir = resolveDataDir(env);
   const configFile = path.join(dataDir, 'config.json');
@@ -228,16 +210,6 @@ export function loadConfig({ env = process.env } = {}) {
   const level = normalizeLevel(env.TML_LOG_LEVEL ?? file.log ?? DEFAULTS.logLevel);
   const javaRuntime = normalizeJavaRuntime(file.java);
   const offlineName = normalizeOfflineName(file.offlineName);
-
-  let authClientId = DEFAULT_MSA_CLIENT_ID;
-  let authSource = 'default';
-  if (typeof env.TML_MSA_CLIENT_ID === 'string' && env.TML_MSA_CLIENT_ID.trim() !== '') {
-    authClientId = normalizeClientId(env.TML_MSA_CLIENT_ID);
-    authSource = 'env';
-  } else if (typeof file.clientId === 'string' && file.clientId.trim() !== '') {
-    authClientId = normalizeClientId(file.clientId);
-    authSource = 'file';
-  }
 
   const config = {
     name: 'TML',
@@ -267,7 +239,7 @@ export function loadConfig({ env = process.env } = {}) {
       file: path.join(dataDir, 'logs', 'tml.log'),
       fromEnv: env.TML_LOG_LEVEL !== undefined && env.TML_LOG_LEVEL !== null,
     },
-    auth: { clientId: authClientId, source: authSource, offlineName },
+    auth: { offlineName },
     java: { runtime: javaRuntime },
   };
 
@@ -294,10 +266,6 @@ export function publicConfig(config) {
     },
     pendingDataDir: pendingDataDir !== null && pendingDataDir !== config.paths.dataDir ? pendingDataDir : null,
     log: config.log.level,
-    auth: {
-      configured: Boolean(config.auth?.clientId),
-      source: config.auth?.source ?? null,
-    },
     offlineName: config.auth?.offlineName ?? null,
     java: config.java?.runtime ?? null,
   };

@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,7 +14,13 @@ import {
 } from '../../src/java/runtime.js';
 import { ConfigError, JavaRuntimeError, ValidationError } from '../../src/core/errors.js';
 
-const BIN = 'java';
+// Tests run on any platform but the app is Windows-only, so every lookup is
+// forced through the win32 platform gate.
+function find(options = {}) {
+  return findMinecraftJava({ platform: 'win32', ...options });
+}
+
+const BIN = 'java.exe';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'tml-java-'));
@@ -64,50 +69,62 @@ test('parseJavaVersion understands modern, legacy and bare outputs', () => {
   assert.equal(parseJavaVersion(null), null);
 });
 
-test('defaultJavaRoots returns only Linux launcher and managed runtimes', () => {
-  const roots = defaultJavaRoots({ env: { HOME: '/home/tester' } });
+test('defaultJavaRoots returns Windows launcher and managed runtimes', () => {
+  const env = {
+    USERPROFILE: 'C:\\Users\\tester',
+    LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local',
+  };
+  const roots = defaultJavaRoots({ env });
   assert.deepEqual(
     roots.map((root) => root.path),
     [
-      '/usr/share/minecraft-launcher/runtime',
-      '/opt/minecraft-launcher/runtime',
-      '/usr/lib/minecraft-launcher/runtime',
-      '/home/tester/.minecraft/runtime',
-      '/home/tester/snap/minecraft/common/.minecraft/runtime',
+      path.join('C:\\Program Files', 'Minecraft Launcher', 'runtime'),
+      path.join(
+        'C:\\Users\\tester\\AppData\\Local',
+        'Packages',
+        'Microsoft.4297127D64EC6_8wekyb3d8bbwe',
+        'LocalCache',
+        'Local',
+        'runtime',
+      ),
+      path.join('C:\\Users\\tester', '.minecraft', 'runtime'),
     ],
   );
   assert.deepEqual(
     roots.map((root) => root.source),
-    ['official-launcher', 'official-launcher', 'official-launcher', 'minecraft-managed', 'minecraft-managed'],
+    ['official-launcher', 'official-launcher', 'minecraft-managed'],
   );
 
-  const injected = defaultJavaRoots({ env: { HOME: '/home/tester' }, minecraftDir: '/data/minecraft' });
-  assert.equal(injected.at(-1).path, '/data/minecraft/runtime');
-  assert.equal(injected.filter((root) => root.source === 'minecraft-managed').length, 1);
+  const customPf = defaultJavaRoots({ env: { ...env, ProgramFiles: 'D:\\Software' } });
+  assert.equal(customPf[0].path, path.join('D:\\Software', 'Minecraft Launcher', 'runtime'));
 
-  for (const root of roots) {
-    assert.ok(!/Program Files|javaw|\.exe|AppData|jre\.bundle|Applications/i.test(root.path));
-  }
+  const injected = defaultJavaRoots({ env, minecraftDir: 'D:\\Minecraft' });
+  assert.equal(injected.at(-1).path, path.join('D:\\Minecraft', 'runtime'));
+  assert.equal(injected.filter((root) => root.source === 'minecraft-managed').length, 1);
 });
 
-test('findMinecraftJava refuses to run on non-Linux platforms', async () => {
+test('findMinecraftJava refuses to run on non-Windows platforms', async () => {
   await assert.rejects(
-    () => findMinecraftJava({ platform: 'win32', roots: [] }),
+    () => find({ platform: 'linux', roots: [] }),
     (err) => {
       assert.ok(err instanceof ConfigError);
       assert.equal(err.code, 'UNSUPPORTED_PLATFORM');
       assert.equal(err.status, 500);
-      assert.deepEqual(err.details, { platform: 'win32', supported: 'linux' });
+      assert.deepEqual(err.details, { platform: 'linux', supported: 'win32' });
       return true;
     },
   );
   await assert.rejects(
-    () => findMinecraftJava({ platform: 'darwin', roots: [] }),
+    () => find({ platform: 'darwin', roots: [] }),
     (err) => err instanceof ConfigError && err.code === 'UNSUPPORTED_PLATFORM',
   );
   await assert.rejects(
-    () => findMinecraftJava({ platform: 'freebsd', roots: [] }),
+    () => find({ platform: 'freebsd', roots: [] }),
     (err) => err instanceof ConfigError && err.code === 'UNSUPPORTED_PLATFORM',
+  );
+  await assert.rejects(
+    () => find({ platform: 'win32', roots: [] }),
+    (err) => err instanceof JavaRuntimeError && err.code === 'JAVA_RUNTIME_NOT_FOUND',
   );
 });
 
@@ -115,7 +132,7 @@ test('findMinecraftJava fails cleanly when nothing is installed', async () => {
   const dir = tmpDir();
   try {
     await assert.rejects(
-      () => findMinecraftJava({ roots: [path.join(dir, 'nothing')], env: {} }),
+      () => find({ roots: [path.join(dir, 'nothing')], env: {} }),
       (err) => {
         assert.ok(err instanceof JavaRuntimeError);
         assert.equal(err.code, 'JAVA_RUNTIME_NOT_FOUND');
@@ -126,7 +143,7 @@ test('findMinecraftJava fails cleanly when nothing is installed', async () => {
       },
     );
     await assert.rejects(
-      () => findMinecraftJava({ roots: [] }),
+      () => find({ roots: [] }),
       (err) => err instanceof JavaRuntimeError && err.code === 'JAVA_RUNTIME_NOT_FOUND',
     );
   } finally {
@@ -140,10 +157,10 @@ test('findMinecraftJava prefers the official launcher runtime', async () => {
     const official = path.join(dir, 'official', 'runtime');
     const managed = path.join(dir, 'game', 'runtime');
     writeBinary(path.join(official, 'jre-x64', 'bin', BIN));
-    writeBinary(path.join(managed, 'java-runtime-gamma', 'linux', 'java-runtime-gamma', 'bin', BIN));
+    writeBinary(path.join(managed, 'java-runtime-gamma', 'bin', BIN));
 
     const probed = [];
-    const result = await findMinecraftJava({
+    const result = await find({
       roots: [
         { path: official, source: 'official-launcher' },
         { path: managed, source: 'minecraft-managed' },
@@ -169,11 +186,9 @@ test('findMinecraftJava falls back to the minecraft-managed runtime', async () =
   const dir = tmpDir();
   try {
     const managed = path.join(dir, '.minecraft', 'runtime');
-    const binary = writeBinary(
-      path.join(managed, 'java-runtime-gamma', 'linux', 'java-runtime-gamma', 'bin', BIN),
-    );
+    const binary = writeBinary(path.join(managed, 'java-runtime-gamma', 'bin', BIN));
 
-    const result = await findMinecraftJava({
+    const result = await find({
       roots: [
         { path: path.join(dir, 'missing-launcher'), source: 'official-launcher' },
         { path: managed, source: 'minecraft-managed' },
@@ -198,16 +213,16 @@ test('findMinecraftJava validates the Java major version', async () => {
     const gamma = writeBinary(path.join(root, 'java-runtime-gamma', 'bin', BIN));
     const probe = (binary) => (binary.startsWith(gamma) ? openjdk17 : legacy8);
 
-    const matched = await findMinecraftJava({ roots: [root], probe, requiredMajor: 17 });
+    const matched = await find({ roots: [root], probe, requiredMajor: 17 });
     assert.equal(matched.path, gamma);
     assert.equal(matched.major, 17);
 
-    const legacyMatch = await findMinecraftJava({ roots: [root], probe, requiredMajor: 8 });
+    const legacyMatch = await find({ roots: [root], probe, requiredMajor: 8 });
     assert.equal(legacyMatch.path, legacy);
     assert.equal(legacyMatch.major, 8);
 
     await assert.rejects(
-      () => findMinecraftJava({ roots: [root], probe, requiredMajor: 21 }),
+      () => find({ roots: [root], probe, requiredMajor: 21 }),
       (err) => {
         assert.ok(err instanceof JavaRuntimeError);
         assert.equal(err.code, 'JAVA_VERSION_MISMATCH');
@@ -234,7 +249,7 @@ test('findMinecraftJava prefers the requested runtime component', async () => {
     const gamma = writeBinary(path.join(root, 'java-runtime-gamma', 'bin', BIN));
     const probe = () => openjdk17;
 
-    const result = await findMinecraftJava({
+    const result = await find({
       roots: [root],
       probe,
       requiredComponent: 'java-runtime-gamma',
@@ -242,7 +257,7 @@ test('findMinecraftJava prefers the requested runtime component', async () => {
     assert.equal(result.path, gamma);
     assert.equal(result.component, 'java-runtime-gamma');
 
-    const anyResult = await findMinecraftJava({ roots: [root], probe });
+    const anyResult = await find({ roots: [root], probe });
     assert.ok([custom, gamma].includes(anyResult.path));
   } finally {
     cleanup(dir);
@@ -258,7 +273,7 @@ test('findMinecraftJava rejects non-executable and unparsable runtimes', async (
     const garbage = writeBinary(path.join(root, 'b-jvm', 'bin', BIN));
 
     await assert.rejects(
-      () => findMinecraftJava({ roots: [root], probe: () => 'not a java at all' }),
+      () => find({ roots: [root], probe: () => 'not a java at all' }),
       (err) => {
         assert.equal(err.code, 'JAVA_RUNTIME_NOT_FOUND');
         const reasons = err.attempts.map((attempt) => attempt.reason);
@@ -283,7 +298,7 @@ test('findMinecraftJava records probe failures', async () => {
 
     await assert.rejects(
       () =>
-        findMinecraftJava({
+        find({
           roots: [root],
           probe: () => {
             throw new Error('boom');
@@ -311,7 +326,7 @@ test('findMinecraftJava never falls back to system Java (JAVA_HOME / PATH)', asy
 
     await assert.rejects(
       () =>
-        findMinecraftJava({
+        find({
           roots: [path.join(dir, 'nothing')],
           env: {
             JAVA_HOME: systemJdk,
@@ -338,11 +353,11 @@ test('findMinecraftJava executes the runtime binary to read its version', async 
   const dir = tmpDir();
   try {
     const binary = writeScript(
-      path.join(dir, 'jvm', 'bin', 'java'),
+      path.join(dir, 'jvm', 'bin', BIN),
       '#!/bin/sh\necho \'openjdk version "17.0.8" 2023-07-18\' >&2\nexit 0\n',
     );
 
-    const result = await findMinecraftJava({ roots: [dir] });
+    const result = await find({ roots: [dir] });
     assert.equal(result.path, binary);
     assert.equal(result.major, 17);
     assert.equal(result.version.raw, '17.0.8');
@@ -359,7 +374,7 @@ test('findMinecraftJava survives symlink loops without hanging', async () => {
 
     await assert.rejects(
       () =>
-        findMinecraftJava({
+        find({
           roots: [dir],
           probe: () => {
             probed += 1;
@@ -379,7 +394,11 @@ test('createJavaDetector binds defaults for repeated lookups', async () => {
   try {
     const root = path.join(dir, 'runtimes');
     writeBinary(path.join(root, 'java-runtime-delta', 'bin', BIN));
-    const detector = createJavaDetector({ roots: [root], probe: () => 'openjdk version "21.0.1"' });
+    const detector = createJavaDetector({
+      roots: [root],
+      probe: () => 'openjdk version "21.0.1"',
+      platform: 'win32',
+    });
 
     const first = await detector.findMinecraftJava();
     assert.equal(first.major, 21);
@@ -398,19 +417,19 @@ test('createJavaDetector binds defaults for repeated lookups', async () => {
 
 test('findMinecraftJava validates its options', async () => {
   await assert.rejects(
-    () => findMinecraftJava({ roots: 'nope' }),
+    () => find({ roots: 'nope' }),
     (err) => err instanceof ValidationError && err.code === 'INVALID_JAVA_ROOTS',
   );
   await assert.rejects(
-    () => findMinecraftJava({ roots: [42] }),
+    () => find({ roots: [42] }),
     (err) => err instanceof ValidationError && err.code === 'INVALID_JAVA_ROOTS',
   );
   await assert.rejects(
-    () => findMinecraftJava({ requiredMajor: 0 }),
+    () => find({ requiredMajor: 0 }),
     (err) => err instanceof ValidationError && err.code === 'INVALID_JAVA_MAJOR',
   );
   await assert.rejects(
-    () => findMinecraftJava({ requiredMajor: 17.5 }),
+    () => find({ requiredMajor: 17.5 }),
     (err) => err instanceof ValidationError && err.code === 'INVALID_JAVA_MAJOR',
   );
 });
@@ -425,6 +444,8 @@ test('live: default roots resolve on this machine', { skip: !process.env.TML_LIV
     assert.ok(err instanceof JavaRuntimeError);
     assert.equal(err.code, 'JAVA_RUNTIME_NOT_FOUND');
     assert.ok(err.details.roots.length > 0);
-    assert.ok(err.details.roots.every((root) => root.startsWith('/')));
+    assert.ok(
+      err.details.roots.every((root) => root.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(root)),
+    );
   }
 });

@@ -1,14 +1,12 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 const REFRESH_MS = 15000;
-const VALID_VIEWS = new Set(['instances', 'servers', 'instance', 'create', 'settings']);
+const VALID_VIEWS = new Set(['instances', 'instance', 'create', 'settings']);
 
 const state = {
   health: null,
   config: null,
-  signedIn: false,
   // 'checking' | 'online' | 'offline' — offline = backend หลุด → disconnect page ทับหน้าจอ
   serverStatus: 'checking',
   pendingDismissed: false,
@@ -29,10 +27,25 @@ const instancesState = {
   updatesTarget: null,
   autoCheckAt: {},
 };
-const serversState = { list: [], loaded: false };
-const importState = { token: null, manifest: null, mode: 'instance' };
-const createState = { mode: 'instance' };
+const importState = { token: null, manifest: null };
 let versionPickerState = null;
+const modProjectInfoCache = new Map();
+let instanceDetailRequest = 0;
+const installedListRequests = new Map();
+const clientJvmDefaultsCache = new Map();
+const clientJvmDefaultsRequests = new Map();
+
+function nextInstalledListRequest(instanceId, kind) {
+  const key = `${instanceId}:${kind}`;
+  const request = (installedListRequests.get(key) ?? 0) + 1;
+  installedListRequests.set(key, request);
+  return request;
+}
+
+function isCurrentInstalledListRequest(instanceId, kind, request) {
+  return instancesState.detail?.id === instanceId
+    && installedListRequests.get(`${instanceId}:${kind}`) === request;
+}
 
 const el = {};
 
@@ -44,8 +57,6 @@ function cacheElements() {
     'factNode',
     'factPlatform',
     'toastHost',
-    'accountPill',
-    'skinOpenBtn',
     'disconnectPage',
     'disconnectRetryBtn',
     'pendingBanner',
@@ -199,7 +210,7 @@ function renderConfig() {
     dataDir: config.paths.dataDir,
     instancesDir: config.paths.instancesDir,
     cacheDir: config.paths.cacheDir,
-    javaRuntime: selectedJavaLabel() ?? '—',
+    javaRuntime: selectedJavaLabel() ?? 'Not selected yet',
   };
 
   for (const [key, value] of Object.entries(values)) {
@@ -234,8 +245,6 @@ function formatBytes(value) {
 }
 
 async function refresh() {
-  // sync session ก่อนเสมอ — ห้ามผูกกับ request อื่น ไม่งั้นชื่อมุมบนจะไม่อัปเดตถ้า fetch ตัวอื่นล้มเหลว
-  await loadSession({ silent: true });
   try {
     const [health, config] = await Promise.all([
       fetchJson('/api/health'),
@@ -248,7 +257,6 @@ async function refresh() {
     renderHealth();
     renderConfig();
     await loadInstances({ silent: true });
-    await loadServers({ silent: true });
     // โหลดรายการ java runtime ตั้งแต่เปิดแอป จะได้แสดง label "Java 25 (java-runtime-…)" ได้ทันที
     // (loadJavaRuntimes มี loaded flag → refresh รอบถัดไปจะไม่ยิงซ้ำ)
     await loadJavaRuntimes();
@@ -273,9 +281,6 @@ function activateView(name) {
 
   if (view === 'instances' && instancesState.loaded) {
     loadInstances({ silent: true });
-  }
-  if (view === 'servers' && serversState.loaded) {
-    loadServers({ silent: true });
   }
   if (view === 'create') {
     loadCatalogOptions();
@@ -577,7 +582,6 @@ async function uploadInstanceIcon(instance, file, { signal } = {}) {
     }
     toast('Icon updated');
     await loadInstances({ silent: true });
-    if (instance.type === 'server') await loadServers({ silent: true });
     if (instancesState.detail?.id === instance.id) await loadInstanceDetail(instance.id);
   } catch (err) {
     if (err?.name !== 'AbortError' && state.serverStatus !== 'offline') toast(err.message, { error: true });
@@ -645,101 +649,6 @@ function instanceCard(instance) {
   del.addEventListener('click', () => deleteInstance(instance));
 
   actions.append(play, exp, del);
-  card.appendChild(actions);
-  return card;
-}
-
-// ---------- Servers ----------
-
-async function loadServers({ silent = false } = {}) {
-  try {
-    const data = await fetchJson('/api/servers');
-    serversState.list = data.servers ?? [];
-    serversState.loaded = true;
-    renderServers();
-  } catch (err) {
-    if (!silent) toast(err.message, { error: true });
-  }
-}
-
-function renderServers() {
-  const grid = document.getElementById('serversGrid');
-  const empty = document.getElementById('serversEmpty');
-  if (!grid || !empty) return;
-
-  grid.replaceChildren();
-  const servers = serversState.list;
-  grid.hidden = servers.length === 0;
-  empty.hidden = servers.length > 0;
-
-  for (const server of servers) {
-    grid.appendChild(serverCard(server));
-  }
-}
-
-function serverCard(server) {
-  const card = document.createElement('article');
-  card.className = 'instance-card card';
-  card.dataset.id = server.id;
-
-  const head = document.createElement('div');
-  head.className = 'instance-card-head';
-
-  const nameBtn = makeText('button', 'instance-name', server.name);
-  nameBtn.type = 'button';
-  nameBtn.addEventListener('click', () => {
-    location.hash = `#instance/${encodeURIComponent(server.id)}`;
-  });
-  const title = makeText('div', 'instance-card-title', '');
-  title.append(instanceIconNode(server, 'instance-icon'), nameBtn);
-  head.appendChild(title);
-  if (server.running) head.appendChild(makeText('span', 'pill pill-running', 'RUNNING'));
-  card.appendChild(head);
-
-  const meta = document.createElement('div');
-  meta.className = 'instance-meta';
-  meta.append(
-    makeText('span', '', `Minecraft ${server.minecraftVersion}`),
-    makeText('span', '', `${server.fabricLoaderVersion}`),
-    makeText('span', '', `Port ${server.port ?? 25565}`),
-    makeText('span', '', `${server.mods ?? 0} Mods`)
-  );
-  card.appendChild(meta);
-
-  const actions = document.createElement('div');
-  actions.className = 'instance-actions';
-
-  const toggle = makeText('button', server.running ? 'btn' : 'btn btn-primary', server.running ? 'STOP' : 'START');
-  toggle.type = 'button';
-  toggle.addEventListener('click', async () => {
-    toggle.disabled = true;
-    try {
-      if (server.running) {
-        await postJson(`/api/servers/${encodeURIComponent(server.id)}/stop`);
-        toast(`${server.name} stopped`);
-      } else {
-        await postJson(`/api/servers/${encodeURIComponent(server.id)}/start`);
-        toast(`${server.name} is starting`);
-      }
-      await loadServers({ silent: true });
-    } catch (err) {
-      toast(err.message, { error: true });
-      if (err.code === 'EULA_NOT_ACCEPTED') location.hash = `#instance/${encodeURIComponent(server.id)}`;
-      await loadServers({ silent: true }).catch(() => {});
-    } finally {
-      toggle.disabled = false;
-    }
-  });
-
-  const exp = makeText('button', 'btn', 'EXPORT');
-  exp.type = 'button';
-  exp.addEventListener('click', () => exportInstance(server));
-
-  const del = makeText('button', 'btn btn-danger', 'DELETE');
-  del.type = 'button';
-  del.addEventListener('click', () => deleteInstance(server, 'server'));
-
-  actions.append(toggle, exp, del);
   card.appendChild(actions);
   return card;
 }
@@ -872,11 +781,10 @@ function confirmDialog({ title = 'Confirm', message = '', confirmLabel = 'CONFIR
   });
 }
 
-async function deleteInstance(instance, mode = 'instance') {
-  const what = mode === 'server' ? 'server' : 'instance';
+async function deleteInstance(instance) {
   const confirmed = await confirmDialog({
-    title: `Delete ${what}`,
-    message: `Delete "${instance.name}"? This removes its instance.json, minecraft/ directory, mods, config and ${what === 'server' ? 'world' : 'saves'} permanently.`,
+    title: 'Delete instance',
+    message: `Delete "${instance.name}"? This removes its instance.json, minecraft/ directory, mods, config and saves permanently.`,
     confirmLabel: 'DELETE',
   });
   if (!confirmed) return;
@@ -884,10 +792,9 @@ async function deleteInstance(instance, mode = 'instance') {
     await deleteJson(`/api/instances/${instance.id}`);
     toast(`${instance.name} deleted`);
     if (location.hash.startsWith('#instance/')) {
-      location.hash = mode === 'server' ? '#servers' : '#instances';
+      location.hash = '#instances';
     }
     await loadInstances({ silent: true });
-    await loadServers({ silent: true });
   } catch (err) {
     toast(err.message, { error: true });
   }
@@ -896,10 +803,17 @@ async function deleteInstance(instance, mode = 'instance') {
 // ---------- Instance detail ----------
 
 async function loadInstanceDetail(id) {
+  const request = ++instanceDetailRequest;
   const previousId = instancesState.detail?.id;
-  instancesState.detail = null;
-  instancesState.mods = [];
   if (previousId !== id) {
+    for (const kind of ['mods', 'resourcepacks', 'shaderpacks']) {
+      if (previousId) nextInstalledListRequest(previousId, kind);
+      nextInstalledListRequest(id, kind);
+    }
+    instancesState.detail = null;
+    instancesState.mods = [];
+    instancesState.packs = { resourcepacks: [], shaderpacks: [] };
+    for(const key of searchListLoaded)if(key.startsWith(`${previousId}:`))searchListLoaded.delete(key);
     instancesState.checks = { mods: [], resourcepacks: [], shaderpacks: [] };
     instancesState.removed = [];
     instancesState.autoCheckAt = {};
@@ -917,9 +831,9 @@ async function loadInstanceDetail(id) {
     }
     for (const searchPanel of Object.keys(SEARCH_PANELS)) clearSearchResults(searchPanel);
     resetUpdatesPanel();
-    const consoleBox = document.getElementById('srvConsole');
+    const consoleBox = document.getElementById('clientConsole');
     if (consoleBox) consoleBox.textContent = '';
-    // ยังไม่รู้ว่าเป็น client หรือ server → ปิดแท็บไว้ก่อน เลือกใหม่หลังโหลดเสร็จ
+    // แท็บที่เลือกไว้อาจใช้ไม่ได้กับ instance นี้ → เลือกใหม่หลังโหลดเสร็จ
     setInstanceTab(null);
   }
   document.getElementById('instanceTitle').textContent = id;
@@ -929,15 +843,14 @@ async function loadInstanceDetail(id) {
 
   try {
     const data = await fetchJson(`/api/instances/${encodeURIComponent(id)}`);
+    if (request !== instanceDetailRequest || location.hash !== `#instance/${encodeURIComponent(id)}`) return;
     instancesState.detail = data.instance;
     renderInstanceDetail();
-    // แท็บที่เปิดอยู่ใช้กับชนิดนี้ไม่ได้ → ไปแท็บแรกของชนิดนี้
-    const validTabs = data.instance.type === 'server'
-      ? ['start', 'mods', 'updates', 'settings']
-      : ['overview', 'mods', 'resourcepacks', 'shaders', 'updates', 'settings'];
+    const validTabs = ['overview', 'mods', 'resourcepacks', 'shaders', 'updates', 'settings'];
     if (!validTabs.includes(instancesState.tab)) setInstanceTab(validTabs[0]);
     else setInstanceTab(instancesState.tab, instancesState.kindView);
   } catch (err) {
+    if (request !== instanceDetailRequest || location.hash !== `#instance/${encodeURIComponent(id)}`) return;
     toast(err.message, { error: true });
     location.hash = '#instances';
   }
@@ -958,7 +871,6 @@ function selectedJavaLabel() {
 function renderInstanceDetail() {
   const instance = instancesState.detail;
   if (!instance) return;
-  const isServer = instance.type === 'server';
 
   document.getElementById('instanceTitle').textContent = instance.name;
   document.getElementById('instanceSubtitle').textContent =
@@ -983,15 +895,7 @@ function renderInstanceDetail() {
   }
 
   const backLabel = document.getElementById('instanceBackLabel');
-  if (backLabel) backLabel.textContent = isServer ? 'Servers' : 'Instances';
-
-  // client มี OVERVIEW/PLAY/RESOURCES/SHADERS — server มีแท็บ START แทน (หน้าอื่นเอาออก)
-  document.getElementById('iOverviewBtn').hidden = isServer;
-  document.getElementById('iPlayBtn').hidden = isServer;
-  const startTabBtn = document.getElementById('iStartBtn');
-  if (startTabBtn) startTabBtn.hidden = !isServer;
-  document.getElementById('iResourcesBtn').hidden = isServer;
-  document.getElementById('iShadersBtn').hidden = isServer;
+  if (backLabel) backLabel.textContent = 'Instances';
 
   const facts = document.getElementById('instanceFacts');
   facts.replaceChildren();
@@ -1007,23 +911,10 @@ function renderInstanceDetail() {
     ['Extra JVM args', instance.extraJvmArgs?.length ? instance.extraJvmArgs.join(' ') : '—'],
     ['Status', instance.running ? `running (pid ${instance.pid})` : 'stopped'],
   ];
-  if (isServer) rows.push(['Port', String(instance.port ?? 25565)]);
   for (const [label, value] of rows) {
     const item = document.createElement('div');
     item.append(makeText('dt', '', label), makeText('dd', '', value));
     facts.appendChild(item);
-  }
-  if (isServer) {
-    renderServerPanel({
-      running: instance.running,
-      pid: instance.pid,
-      sessionSeconds: instance.sessionSeconds ?? 0,
-      installed: instance.installed,
-      eulaAccepted: instance.eulaAccepted,
-      port: instance.port,
-      busy: false,
-      phase: instance.running ? 'starting' : 'idle',
-    });
   }
 
   const play = document.getElementById('iPlayBtn');
@@ -1032,10 +923,10 @@ function renderInstanceDetail() {
   fillIfIdle(document.getElementById('isName'), instance.name);
   fillIfIdle(document.getElementById('isMemMin'), instance.memory?.min ?? '');
   fillIfIdle(document.getElementById('isMemMax'), instance.memory?.max ?? '');
-  fillIfIdle(document.getElementById('isJvmArgs'), formatArgString(instance.extraJvmArgs));
-  const portField = document.getElementById('isPortField');
-  if (portField) portField.hidden = !isServer;
-  fillIfIdle(document.getElementById('isPort'), String(instance.port ?? 25565));
+  fillIfIdle(
+    document.getElementById('isJvmArgs'),
+    instance.extraJvmArgs?.length || instance.extraJvmArgsConfigured ? formatArgString(instance.extraJvmArgs) : '',
+  );
   const readOnly = {
     isId: instance.id,
     isLoader: instance.fabricLoaderVersion,
@@ -1091,101 +982,110 @@ function renderInstanceDetail() {
     });
 }
 
-// ---------- Server console (แท็บ START) ----------
+// ---------- Client console (แท็บ OVERVIEW) ----------
 
 const SERVER_CONSOLE_MAX_LINES = 1000;
-const SRV_PHASE_LABELS = { idle: 'Stopped', installing: 'Installing…', starting: 'Starting…', running: 'Running' };
-let serverPoll = null;
+let clientPoll = null;
 
-function appendServerConsole(lines) {
+function appendClientConsole(lines) {
   if (!Array.isArray(lines) || lines.length === 0) return;
-  const box = document.getElementById('srvConsole');
+  const box = document.getElementById('clientConsole');
   if (!box) return;
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
   const existing = box.textContent === '' ? [] : box.textContent.split('\n');
-  for (const line of lines) existing.push(line.text ?? String(line));
+  for (const line of lines) {
+    const text = line.text ?? String(line);
+    existing.push(line.stream === 'stderr' ? `[stderr] ${text}` : text);
+  }
   if (existing.length > SERVER_CONSOLE_MAX_LINES) existing.splice(0, existing.length - SERVER_CONSOLE_MAX_LINES);
   box.textContent = existing.join('\n');
   if (nearBottom) box.scrollTop = box.scrollHeight;
 }
 
-function renderServerPanel(status) {
-  const pill = document.getElementById('srvStatePill');
-  const facts = document.getElementById('srvFacts');
-  if (!pill || !facts) return;
-  const busy = status.busy === true;
-  const phase = status.phase ?? 'idle';
-  pill.textContent = SRV_PHASE_LABELS[phase] ?? 'Stopped';
-  pill.className = status.running === true ? 'pill pill-running' : 'pill pill-muted';
-
-  const rows = [
-    ['Status', status.running === true ? `running (pid ${status.pid})` : busy ? 'working…' : 'stopped'],
-    ['Uptime', status.running === true ? formatUptime(status.sessionSeconds ?? 0) : '—'],
-    ['Port', String(status.port ?? 25565)],
-    ['EULA', status.eulaAccepted === true ? 'Accepted' : 'Not accepted'],
-    ['Server files', status.installed === true ? 'Installed' : 'Installs on first START'],
-  ];
-  facts.replaceChildren();
-  for (const [label, value] of rows) {
-    const item = document.createElement('div');
-    item.append(makeText('dt', '', label), makeText('dd', '', value));
-    facts.appendChild(item);
-  }
-
-  const banner = document.getElementById('srvEulaBanner');
-  if (banner) banner.hidden = status.eulaAccepted === true;
-  const startBtn = document.getElementById('srvStartBtn');
-  const stopBtn = document.getElementById('srvStopBtn');
-  if (startBtn) {
-    startBtn.hidden = status.running === true;
-    startBtn.disabled = busy === true;
-  }
-  if (stopBtn) stopBtn.hidden = status.running !== true;
-  const statusText = document.getElementById('srvStatus');
-  if (statusText) {
-    statusText.hidden = busy !== true;
-    statusText.textContent = phase === 'installing' ? 'Installing server files…' : 'Working…';
-  }
+function stopClientPoll() {
+  if (clientPoll?.timer) clearTimeout(clientPoll.timer);
+  clientPoll = null;
 }
 
-function stopServerPoll() {
-  if (serverPoll?.timer) clearTimeout(serverPoll.timer);
-  serverPoll = null;
-}
-
-// poll console + status ทุกวินาทีขณะเปิดแท็บ START — เลิกเมื่อออกจากแท็บ/เปลี่ยน instance/ปิดหน้า
-function startServerPoll() {
+function startClientPoll() {
   const detail = instancesState.detail;
-  const id = detail?.type === 'server' ? detail.id : null;
+  const id = detail?.type === 'client' ? detail.id : null;
   if (!id) return;
-  if (serverPoll && serverPoll.id === id) return;
-  stopServerPoll();
-  const poll = { id, timer: null, since: 0 };
-  serverPoll = poll;
+  if (clientPoll && clientPoll.id === id) return;
+  stopClientPoll();
+  const logBox = document.getElementById('clientConsole');
+  if (logBox) logBox.textContent = '';
+  const poll = { id, timer: null, since: 0, generation: null };
+  clientPoll = poll;
   const tick = async () => {
-    if (serverPoll !== poll) return;
+    if (clientPoll !== poll) return;
     if (
       instancesState.detail?.id !== id
-      || instancesState.tab !== 'start'
+      || instancesState.detail?.type !== 'client'
+      || instancesState.tab !== 'overview'
       || location.hash !== `#instance/${encodeURIComponent(id)}`
     ) {
-      stopServerPoll();
+      stopClientPoll();
       return;
     }
     try {
-      const consoleData = await fetchJson(`/api/servers/${encodeURIComponent(id)}/console?since=${poll.since}`);
-      if (serverPoll !== poll) return;
-      poll.since = consoleData.nextSince ?? poll.since;
-      appendServerConsole(consoleData.lines);
-      const status = await fetchJson(`/api/servers/${encodeURIComponent(id)}/status`);
-      if (serverPoll !== poll) return;
-      renderServerPanel(status);
+      const generation = poll.generation ?? 0;
+      const data = await fetchJson(`/api/instances/${encodeURIComponent(id)}/console?since=${poll.since}&generation=${generation}`);
+      if (clientPoll !== poll) return;
+      const newSession = poll.generation !== null && poll.generation !== data.generation;
+      if (newSession) {
+        const box = document.getElementById('clientConsole');
+        if (box) box.textContent = '';
+      }
+      poll.generation = data.generation ?? poll.generation;
+      poll.since = data.nextSince ?? poll.since;
+      appendClientConsole(data.lines);
     } catch {
-      /* เงียบ — รอบถัดไป convergence เอง */
+      /* Keep the last output visible and retry on the next poll. */
     }
-    if (serverPoll === poll) poll.timer = setTimeout(tick, 1000);
+    if (clientPoll === poll) poll.timer = setTimeout(tick, 1000);
   };
   tick();
+}
+
+async function loadClientJvmDefaults() {
+  const instance = instancesState.detail;
+  const input = document.getElementById('isJvmArgs');
+  if (!instance || instance.type !== 'client' || instance.extraJvmArgsConfigured === true || !input) return;
+  if (input.dataset.dirty === '1') return;
+  const cacheKey = `${instance.id}:${instance.minecraftVersion}:${instance.fabricLoaderVersion ?? ''}`;
+  const cached = clientJvmDefaultsCache.get(cacheKey);
+  if (cached) {
+    if (input.dataset.dirty !== '1') input.value = formatArgString([...cached, ...(instance.extraJvmArgs ?? [])]);
+    return;
+  }
+  const id = instance.id;
+  try {
+    let request = clientJvmDefaultsRequests.get(cacheKey);
+    if (!request) {
+      request = fetchJson(`/api/instances/${encodeURIComponent(id)}/default-jvm-args`)
+        .then((data) => {
+          const args = Array.isArray(data.args) ? data.args : [];
+          clientJvmDefaultsCache.set(cacheKey, args);
+          return args;
+        })
+        .finally(() => clientJvmDefaultsRequests.delete(cacheKey));
+      clientJvmDefaultsRequests.set(cacheKey, request);
+    }
+    const args = await request;
+    if (
+      instancesState.detail?.id === id
+      && `${instancesState.detail.minecraftVersion}:${instancesState.detail.fabricLoaderVersion ?? ''}` === `${instance.minecraftVersion}:${instance.fabricLoaderVersion ?? ''}`
+      && instancesState.detail?.type === 'client'
+      && instancesState.tab === 'settings'
+      && instancesState.detail.extraJvmArgsConfigured !== true
+      && input.dataset.dirty !== '1'
+    ) {
+      input.value = formatArgString([...args, ...(instance.extraJvmArgs ?? [])]);
+    }
+  } catch {
+    /* The instance settings remain editable when version metadata is unavailable. */
+  }
 }
 
 function setInstanceTab(tab, kindView = 'list') {
@@ -1198,7 +1098,6 @@ function setInstanceTab(tab, kindView = 'list') {
   // แท็บ content = { แท็บ: suffix ของ panel } — แต่ละแท็บมี 2 หน้า: list (INSTALLED) + get (GET)
   const kindSuffixes = { mods: 'Mods', resourcepacks: 'Rp', shaders: 'Sp' };
   show('instancePanelOverview', tab === 'overview');
-  show('instancePanelStart', tab === 'start');
   show('instancePanelSettings', tab === 'settings');
   show('instancePanelUpdates', tab === 'updates');
   for (const [kindTab, suffix] of Object.entries(kindSuffixes)) {
@@ -1207,7 +1106,6 @@ function setInstanceTab(tab, kindView = 'list') {
     show(`instancePanel${suffix}Get`, active && kindView === 'get');
   }
   document.getElementById('iOverviewBtn')?.classList.toggle('is-active', tab === 'overview');
-  document.getElementById('iStartBtn')?.classList.toggle('is-active', tab === 'start');
   document.getElementById('iModsBtn')?.classList.toggle('is-active', tab === 'mods');
   document.getElementById('iResourcesBtn')?.classList.toggle('is-active', tab === 'resourcepacks');
   document.getElementById('iShadersBtn')?.classList.toggle('is-active', tab === 'shaders');
@@ -1218,9 +1116,10 @@ function setInstanceTab(tab, kindView = 'list') {
   for (const seg of document.querySelectorAll('#kindSubNav .seg')) {
     seg.classList.toggle('is-active', (seg.dataset.kindView ?? 'list') === kindView);
   }
-  // console ของ server poll ขณะเปิดแท็บ START — ออกจากแท็บ/เปลี่ยน instance ต้องหยุดด้วย
-  if (tab === 'start' && instancesState.detail?.type === 'server') startServerPoll();
-  else stopServerPoll();
+  // Poll only the visible console; stop on tab or instance changes.
+  if (tab === 'overview' && instancesState.detail?.type === 'client') startClientPoll();
+  else stopClientPoll();
+  if (tab === 'settings' && instancesState.detail?.type === 'client') loadClientJvmDefaults();
 }
 
 // ---------- Update checks (Modrinth hash + latest version) ----------
@@ -1408,7 +1307,7 @@ function maybeAutoCheck(kinds) {
   runInstanceCheck(kinds, { render: renderForKind(kinds[kinds.length - 1]) });
 }
 
-async function runInstanceCheck(kinds, { render }) {
+async function runInstanceCheck(kinds, { render, silent = false }) {
   const instance = instancesState.detail;
   if (!instance || instancesState.checking) return;
   const panelId = panelForKinds(kinds);
@@ -1447,7 +1346,7 @@ async function runInstanceCheck(kinds, { render }) {
       status.textContent = parts.join(' · ');
     }
     setProgress(panelId, true, 100, 'Done');
-    toast(updateCount === 0 ? 'Everything is up to date' : `${updateCount} update${updateCount === 1 ? '' : 's'} available`);
+    if (!silent) toast(updateCount === 0 ? 'Everything is up to date' : `${updateCount} update${updateCount === 1 ? '' : 's'} available`);
     render();
     refreshUpdateAllButtons();
   } catch (err) {
@@ -1455,7 +1354,7 @@ async function runInstanceCheck(kinds, { render }) {
       status.hidden = false;
       status.textContent = err.message;
     }
-    toast(err.message, { error: true });
+    if (!silent) toast(err.message, { error: true });
   } finally {
     stopPoll();
     instancesState.checking = false;
@@ -1583,13 +1482,12 @@ const UPD_KIND_GROUPS = [
   { kind: 'mods', label: 'Mods' },
   { kind: 'shaderpacks', label: 'Shaders' },
 ];
-// server มีแค่ mods — resourcepacks/shaders ไม่มีบน server อย่าไปเช็ค/โชว์
-function activeUpdGroups() {
-  if (instancesState.detail?.type === 'server') return UPD_KIND_GROUPS.filter((group) => group.kind === 'mods');
-  return UPD_KIND_GROUPS;
-}
 // หน้า UPDATES เหลือเฉพาะ mods + shaders — resource packs ดูแลในแท็บ Resources (ไม่สน MC version ด้วย)
 const UPD_KIND_LABELS = { mods: 'mods', resourcepacks: 'resource packs', shaderpacks: 'shaders' };
+
+function activeUpdGroups() {
+  return UPD_KIND_GROUPS;
+}
 
 function updateStatusInfo(check) {
   if (check.status === 'unmatched') {
@@ -2213,31 +2111,186 @@ async function applySelectedUpdates() {
 async function loadMods() {
   const instance = instancesState.detail;
   if (!instance) return;
+  const request = nextInstalledListRequest(instance.id, 'mods');
   const list = document.getElementById('modList');
   const pill = document.getElementById('modCountPill');
   list.replaceChildren(makeText('p', 'muted', 'Loading mods…'));
 
   try {
     const data = await fetchJson(`/api/instances/${encodeURIComponent(instance.id)}/mods`);
+    if (!isCurrentInstalledListRequest(instance.id, 'mods', request)) return false;
     instancesState.mods = data.mods ?? [];
+    searchListLoaded.add(`${instance.id}:mods`);
     pill.textContent = `${data.count} mods`;
     renderMods();
+    return true;
   } catch (err) {
+    if (!isCurrentInstalledListRequest(instance.id, 'mods', request)) return false;
     list.replaceChildren(makeText('p', 'muted', err.message));
     toast(err.message, { error: true });
+    return false;
+  }
+}
+
+function modSideValue(project, side) {
+  return String(project?.[side === 'server' ? 'serverSide' : 'clientSide'] ?? '').toLowerCase();
+}
+
+function modSupportsSide(project, side) {
+  return ['required', 'optional'].includes(modSideValue(project, side));
+}
+
+function currentModSide() {
+  // instance เป็น client เสมอ → mod side ที่ใช้คือ client เสมอ
+  return 'client';
+}
+
+function modSideWarning(project, side = currentModSide()) {
+  if (side === 'server' && modSupportsSide(project, 'client') && modSideValue(project, 'server') === 'unsupported') {
+    return 'Client-only mod detected in a server. It may not work here.';
+  }
+  if (side === 'client' && modSupportsSide(project, 'server') && modSideValue(project, 'client') === 'unsupported') {
+    return 'Server-only mod detected in a client. It may not work here.';
+  }
+  return '';
+}
+
+function modSideLabel(project) {
+  return ['client', 'server'].filter((side) => modSupportsSide(project, side)).map((side) => side.toUpperCase()).join(' + ');
+}
+
+const projectInfoQueue = [];
+let projectInfoActive = 0;
+let projectInfoTimer = null;
+function drainProjectInfoQueue() {
+  while (projectInfoActive < 2 && projectInfoQueue.length) {
+    const batch = projectInfoQueue.splice(0, 25);
+    projectInfoActive += 1;
+    postJson('/api/modrinth/projects', { ids: batch.map((item) => item.projectId) })
+      .then((data) => {
+        const projects = new Map();
+        for (const project of data.projects ?? []) {
+          projects.set(project.projectId, project);
+          if (project.slug) projects.set(project.slug, project);
+        }
+        for (const { projectId, resolve } of batch) {
+          const project = projects.get(projectId) ?? null;
+          if (!project) modProjectInfoCache.delete(projectId);
+          resolve(project);
+        }
+      })
+      .catch(() => {
+        for (const { projectId, resolve } of batch) {
+          modProjectInfoCache.delete(projectId);
+          resolve(null);
+        }
+      })
+      .finally(() => {
+        projectInfoActive -= 1;
+        drainProjectInfoQueue();
+      });
+  }
+}
+function fetchModProjectInfo(projectId) {
+  if (!projectId) return Promise.resolve(null);
+  if (!modProjectInfoCache.has(projectId)) {
+    const promise = new Promise((resolve) => projectInfoQueue.push({ projectId, resolve }));
+    modProjectInfoCache.set(projectId, promise);
+    if (!projectInfoTimer) {
+      projectInfoTimer = setTimeout(() => {
+        projectInfoTimer = null;
+        drainProjectInfoQueue();
+      }, 16);
+    }
+  }
+  return modProjectInfoCache.get(projectId);
+}
+
+function appendModSideWarning(row, project, side = currentModSide()) {
+  const warning = modSideWarning(project, side);
+  if (!warning) return;
+  row.classList.add('has-mod-side-warning');
+  const note = makeText('span', 'mod-side-warning', warning);
+  note.setAttribute('role', 'alert');
+  row.appendChild(note);
+}
+
+function modrinthProjectButton(projectId, kind) {
+  if (!projectId) {
+    const button = makeText('button', 'btn btn-small modrinth-project-btn', 'Modrinth');
+    button.type = 'button';
+    button.disabled = true;
+    button.title = 'This file has not been identified on Modrinth';
+    return button;
+  }
+
+  const projectType = kind === 'mods' ? 'mod' : kind === 'shaderpacks' ? 'shader' : 'resourcepack';
+  const link = makeText('a', 'btn btn-small modrinth-project-btn', 'Modrinth');
+  link.href = `https://modrinth.com/${projectType}/${encodeURIComponent(projectId)}`;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.title = 'Open this project page on Modrinth in TML';
+  return link;
+}
+
+const installedProjectInfoJobs = new Map();
+const installedProjectInfoObserver = typeof IntersectionObserver === 'function'
+  ? new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const load = installedProjectInfoJobs.get(entry.target);
+      installedProjectInfoObserver.unobserve(entry.target);
+      installedProjectInfoJobs.delete(entry.target);
+      load?.();
+    }
+  }, { rootMargin: '100px' })
+  : null;
+
+function decorateInstalledProject(row, file, kind, check) {
+  const projectId = file.projectId || check?.projectId;
+  const icon = modIcon({ title: file.filename });
+  row.prepend(icon);
+  row.appendChild(modrinthProjectButton(projectId, kind));
+  if (!projectId) return;
+  const instanceId = instancesState.detail?.id;
+  const side = currentModSide();
+  const load = () => {
+    if (!row.isConnected || instancesState.detail?.id !== instanceId) return;
+    fetchModProjectInfo(projectId).then((project) => {
+      if (!project || !row.isConnected || instancesState.detail?.id !== instanceId) return;
+      const artwork = modIcon(project);
+      artwork.loading = 'eager';
+      icon.replaceWith(artwork);
+      if (kind === 'mods') appendModSideWarning(row, project, side);
+    });
+  };
+  if (installedProjectInfoObserver) {
+    for (const oldRow of installedProjectInfoJobs.keys()) {
+      if (!oldRow.isConnected) {
+        installedProjectInfoObserver.unobserve(oldRow);
+        installedProjectInfoJobs.delete(oldRow);
+      }
+    }
+    installedProjectInfoJobs.set(row, load);
+    installedProjectInfoObserver.observe(row);
+  } else {
+    queueMicrotask(load);
   }
 }
 
 function renderMods() {
   const list = document.getElementById('modList');
   list.replaceChildren();
+  const query=(document.getElementById('modInstalledSearch')?.value??'').trim().toLowerCase();
+  const visible=instancesState.mods.filter(mod=>mod.filename.toLowerCase().includes(query));
 
-  if (instancesState.mods.length === 0) {
+  if (visible.length === 0) {
+    if(query){list.appendChild(makeText('p','muted','No installed mods match this search.'));return;}
     list.appendChild(makeText('p', 'muted', 'No mods installed in this instance.'));
     return;
   }
 
-  for (const mod of instancesState.mods) {
+  for (const mod of visible) {
     const row = document.createElement('div');
     row.className = 'mod-row';
     row.append(
@@ -2246,10 +2299,13 @@ function renderMods() {
     );
     const modCheck = checkResultFor(mod.filename, 'mods');
     if (!modCheck || modCheck.status !== 'unmatched') appendVersionsButton(row, mod.filename, 'mods');
+    decorateInstalledProject(row, mod, 'mods', modCheck);
     appendCheckOutcome(row, modCheck, 'mods');
     const remove = makeText('button', 'btn btn-danger btn-small', 'REMOVE');
     remove.type = 'button';
     remove.addEventListener('click', async () => {
+      const scroller = document.querySelector('.main');
+      const scrollTop = scroller?.scrollTop ?? 0;
       try {
         await deleteJson(`/api/instances/${instancesState.detail.id}/mods/${encodeURIComponent(mod.filename)}`);
         toast(`${mod.filename} removed`);
@@ -2258,6 +2314,8 @@ function renderMods() {
         renderInstanceDetail();
       } catch (err) {
         toast(err.message, { error: true });
+      } finally {
+        if (scroller?.isConnected) requestAnimationFrame(() => { scroller.scrollTop = scrollTop; });
       }
     });
     row.appendChild(remove);
@@ -2268,6 +2326,7 @@ function renderMods() {
 async function loadPackList(kind) {
   const instance = instancesState.detail;
   if (!instance) return;
+  const request = nextInstalledListRequest(instance.id, kind);
   const list = document.getElementById(kind === 'resourcepacks' ? 'rpList' : 'spList');
   if (list) list.replaceChildren(makeText('p', 'muted', 'Loading…'));
 
@@ -2275,13 +2334,17 @@ async function loadPackList(kind) {
     const data = await fetchJson(
       `/api/instances/${encodeURIComponent(instance.id)}/packs?kind=${kind}`
     );
+    if (!isCurrentInstalledListRequest(instance.id, kind, request)) return false;
     instancesState.packs[kind] = data.packs ?? [];
+    searchListLoaded.add(`${instance.id}:${kind}`);
   } catch (err) {
+    if (!isCurrentInstalledListRequest(instance.id, kind, request)) return false;
     instancesState.packs[kind] = [];
     if (list) list.replaceChildren(makeText('p', 'muted', err.message));
-    return;
+    return false;
   }
   renderPackList(kind);
+  return true;
 }
 
 function renderPackList(kind) {
@@ -2289,11 +2352,14 @@ function renderPackList(kind) {
   const list = document.getElementById(isResource ? 'rpList' : 'spList');
   const count = document.getElementById(isResource ? 'rpCountPill' : 'spCountPill');
   const files = instancesState.packs[kind];
+  const query=(document.getElementById(isResource?'rpInstalledSearch':'spInstalledSearch')?.value??'').trim().toLowerCase();
+  const visible=files.filter(file=>file.filename.toLowerCase().includes(query));
   if (count) count.textContent = String(files.length);
   if (!list) return;
   list.replaceChildren();
 
-  if (files.length === 0) {
+  if (visible.length === 0) {
+    if(query){list.appendChild(makeText('p','muted','No installed files match this search.'));return;}
     list.appendChild(
       makeText(
         'p',
@@ -2306,7 +2372,7 @@ function renderPackList(kind) {
     return;
   }
 
-  for (const file of files) {
+  for (const file of visible) {
     const row = document.createElement('div');
     row.className = 'mod-row';
     row.append(
@@ -2315,10 +2381,13 @@ function renderPackList(kind) {
     );
     const fileCheck = checkResultFor(file.filename, kind);
     if (!fileCheck || fileCheck.status !== 'unmatched') appendVersionsButton(row, file.filename, kind);
+    decorateInstalledProject(row, file, kind, fileCheck);
     appendCheckOutcome(row, fileCheck, kind);
     const remove = makeText('button', 'btn btn-danger btn-small', 'REMOVE');
     remove.type = 'button';
     remove.addEventListener('click', async () => {
+      const scroller = document.querySelector('.main');
+      const scrollTop = scroller?.scrollTop ?? 0;
       try {
         await deleteJson(
           `/api/instances/${encodeURIComponent(instancesState.detail.id)}/packs/${encodeURIComponent(file.filename)}?kind=${kind}`
@@ -2327,6 +2396,8 @@ function renderPackList(kind) {
         await loadPackList(kind);
       } catch (err) {
         toast(err.message, { error: true });
+      } finally {
+        if (scroller?.isConnected) requestAnimationFrame(() => { scroller.scrollTop = scrollTop; });
       }
     });
     row.appendChild(remove);
@@ -2335,8 +2406,11 @@ function renderPackList(kind) {
 }
 
 function setupInstanceDetail() {
+  document.getElementById('modInstalledSearch')?.addEventListener('input',renderMods);
+  document.getElementById('rpInstalledSearch')?.addEventListener('input',()=>renderPackList('resourcepacks'));
+  document.getElementById('spInstalledSearch')?.addEventListener('input',()=>renderPackList('shaderpacks'));
   document.getElementById('instanceBackBtn')?.addEventListener('click', () => {
-    location.hash = instancesState.detail?.type === 'server' ? '#servers' : '#instances';
+    location.hash = '#instances';
   });
 
   document.getElementById('iPlayBtn')?.addEventListener('click', async (event) => {
@@ -2348,12 +2422,14 @@ function setupInstanceDetail() {
       if (instance.running) {
         await postJson(`/api/instances/${instance.id}/stop`);
         toast(`${instance.name} stopped`);
+        await loadInstanceDetail(instance.id);
+        await loadInstances({ silent: true });
       } else {
         await launchWithProgress(instance.id, instance.name);
         toast(`${instance.name} is launching`);
+        await loadInstanceDetail(instance.id);
+        await loadInstances({ silent: true });
       }
-      await loadInstanceDetail(instance.id);
-      await loadInstances({ silent: true });
     } catch (err) {
       toast(err.message, { error: true });
     } finally {
@@ -2361,56 +2437,8 @@ function setupInstanceDetail() {
     }
   });
 
-  document.getElementById('iStartBtn')?.addEventListener('click', () => {
-    // server: แท็บ START = สถานะ + EULA + console (ปุ่ม PLAY ของ client ถูกแทนด้วยแท็บนี้)
-    setInstanceTab('start');
-  });
-
-  const runServerAction = async (button, action) => {
-    const instance = instancesState.detail;
-    if (!instance) return;
-    button.disabled = true;
-    try {
-      await action();
-      await loadServers({ silent: true });
-    } catch (err) {
-      toast(err.message, { error: true });
-    } finally {
-      button.disabled = false;
-      // poll รอบถัดไปจะดึง status/console ล่าสุดมาอัปเดตแผงเอง
-      startServerPoll();
-    }
-  };
-
-  document.getElementById('srvStartBtn')?.addEventListener('click', (event) => {
-    const instance = instancesState.detail;
-    if (!instance) return;
-    runServerAction(event.currentTarget, async () => {
-      await postJson(`/api/servers/${encodeURIComponent(instance.id)}/start`);
-      toast(`${instance.name} is starting`);
-    });
-  });
-
-  document.getElementById('srvStopBtn')?.addEventListener('click', (event) => {
-    const instance = instancesState.detail;
-    if (!instance) return;
-    runServerAction(event.currentTarget, async () => {
-      await postJson(`/api/servers/${encodeURIComponent(instance.id)}/stop`);
-      toast(`${instance.name} stopped`);
-    });
-  });
-
-  document.getElementById('srvEulaBtn')?.addEventListener('click', (event) => {
-    const instance = instancesState.detail;
-    if (!instance) return;
-    runServerAction(event.currentTarget, async () => {
-      await postJson(`/api/servers/${encodeURIComponent(instance.id)}/eula`, { accept: true });
-      toast('Minecraft EULA accepted');
-    });
-  });
-
-  document.getElementById('srvClearBtn')?.addEventListener('click', () => {
-    const box = document.getElementById('srvConsole');
+  document.getElementById('clientLogClearBtn')?.addEventListener('click', () => {
+    const box = document.getElementById('clientConsole');
     if (box) box.textContent = '';
   });
 
@@ -2420,17 +2448,23 @@ function setupInstanceDetail() {
 
   document.getElementById('iModsBtn')?.addEventListener('click', () => {
     setInstanceTab('mods');
-    loadMods().then(() => maybeAutoCheck(['mods']));
+    loadMods().then((loaded) => {
+      if (loaded && instancesState.tab === 'mods' && instancesState.kindView === 'list') maybeAutoCheck(['mods']);
+    });
   });
 
   document.getElementById('iResourcesBtn')?.addEventListener('click', () => {
     setInstanceTab('resourcepacks');
-    loadPackList('resourcepacks').then(() => maybeAutoCheck(['resourcepacks']));
+    loadPackList('resourcepacks').then((loaded) => {
+      if (loaded && instancesState.tab === 'resourcepacks' && instancesState.kindView === 'list') maybeAutoCheck(['resourcepacks']);
+    });
   });
 
   document.getElementById('iShadersBtn')?.addEventListener('click', () => {
     setInstanceTab('shaders');
-    loadPackList('shaderpacks').then(() => maybeAutoCheck(['shaderpacks']));
+    loadPackList('shaderpacks').then((loaded) => {
+      if (loaded && instancesState.tab === 'shaders' && instancesState.kindView === 'list') maybeAutoCheck(['shaderpacks']);
+    });
   });
 
   document.getElementById('iUpdatesBtn')?.addEventListener('click', async () => {
@@ -2501,7 +2535,7 @@ function setupInstanceDetail() {
   const settingsForm = document.getElementById('instanceSettingsForm');
   const settingsError = document.getElementById('instanceSettingsError');
   if (settingsForm && settingsError) {
-    for (const id of ['isName', 'isMemMin', 'isMemMax', 'isJvmArgs', 'isPort']) {
+    for (const id of ['isName', 'isMemMin', 'isMemMax', 'isJvmArgs']) {
       document.getElementById(id)?.addEventListener('input', (event) => {
         event.currentTarget.dataset.dirty = '1';
       });
@@ -2511,8 +2545,15 @@ function setupInstanceDetail() {
       const instance = instancesState.detail;
       if (!instance) return;
       settingsError.hidden = true;
-      const fieldIds = ['isName', 'isMemMin', 'isMemMax', 'isJvmArgs', 'isPort'];
+      const fieldIds = ['isName', 'isMemMin', 'isMemMax', 'isJvmArgs'];
       try {
+        if (
+          instance.type === 'client'
+          && instance.extraJvmArgsConfigured !== true
+          && !document.getElementById('isJvmArgs')?.dataset.dirty
+        ) {
+          await loadClientJvmDefaults();
+        }
         const payload = {
           name: document.getElementById('isName').value.trim(),
           memory: {
@@ -2521,10 +2562,6 @@ function setupInstanceDetail() {
           },
           extraJvmArgs: parseArgString(document.getElementById('isJvmArgs').value),
         };
-        if (instance.type === 'server') {
-          const port = Number.parseInt(document.getElementById('isPort').value, 10);
-          if (Number.isInteger(port)) payload.port = port;
-        }
         const result = await patchJson(`/api/instances/${encodeURIComponent(instance.id)}`, payload);
         for (const id of fieldIds) {
           const input = document.getElementById(id);
@@ -2532,9 +2569,8 @@ function setupInstanceDetail() {
         }
         instancesState.detail = result.instance;
         renderInstanceDetail();
-        toast(instance.type === 'server' ? 'Server settings saved' : 'Instance settings saved');
+        toast('Instance settings saved');
         await loadInstances({ silent: true });
-        await loadServers({ silent: true });
       } catch (err) {
         settingsError.hidden = false;
         settingsError.textContent = err.message;
@@ -2546,9 +2582,24 @@ function setupInstanceDetail() {
     if (instancesState.detail) exportInstance(instancesState.detail);
   });
 
+  document.getElementById('iOpenFolderBtn')?.addEventListener('click', async (event) => {
+    const instance = instancesState.detail;
+    if (!instance) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await postJson(`/api/instances/${encodeURIComponent(instance.id)}/open-folder`);
+      toast('Opening instance folder');
+    } catch (err) {
+      toast(err.message, { error: true });
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   document.getElementById('iDeleteBtn')?.addEventListener('click', () => {
     const instance = instancesState.detail;
-    if (instance) deleteInstance(instance, instance.type === 'server' ? 'server' : 'instance');
+    if (instance) deleteInstance(instance);
   });
 }
 
@@ -2565,19 +2616,13 @@ function setImportStep(step) {
   modal.dataset.step = String(step);
 }
 
-function openImportModal(mode = 'instance') {
+function openImportModal() {
   importState.token = null;
   importState.manifest = null;
-  importState.mode = mode === 'server' ? 'server' : 'instance';
   const title = document.getElementById('importTitle');
-  if (title) title.textContent = importState.mode === 'server' ? 'Import Server' : 'Import Instance';
-  // wizard "Instance Name" ↔ "Server Name" ตามชนิด
-  const nameWord = importState.mode === 'server' ? 'Server Name' : 'Instance Name';
-  for (const span of document.querySelectorAll('#importModal .wizard-path span')) {
-    if (span.textContent === 'Instance Name' || span.textContent === 'Server Name') span.textContent = nameWord;
-  }
+  if (title) title.textContent = 'Import Instance';
   const nameLabel = document.querySelector('#importStep2 .field-label');
-  if (nameLabel) nameLabel.textContent = nameWord;
+  if (nameLabel) nameLabel.textContent = 'Instance Name';
   const error = document.getElementById('importError');
   error.hidden = true;
   error.textContent = '';
@@ -2621,18 +2666,13 @@ function applyImportPreview(payload) {
   setImportStep(2);
 }
 
-// path ของ import endpoint ตามชนิดที่เลือก — client กับ server คนละประตูกัน
-function importEndpoint() {
-  return importState.mode === 'server' ? '/api/servers/import' : '/api/instances/import';
-}
-
 async function handleImportFile(file) {
   if (!file) return;
   const error = document.getElementById('importError');
   error.hidden = true;
 
   try {
-    const response = await apiFetch(`${importEndpoint()}?preview=1`, {
+    const response = await apiFetch('/api/instances/import?preview=1', {
       method: 'POST',
       headers: { 'content-type': 'application/zip', accept: 'application/json' },
       body: file,
@@ -2658,13 +2698,12 @@ async function confirmImport() {
   const confirmBtn = document.getElementById('importConfirmBtn');
   confirmBtn.disabled = true;
   try {
-    const result = await postJson(importEndpoint(), { token: importState.token, name });
+    const result = await postJson('/api/instances/import', { token: importState.token, name });
     document.getElementById('importDoneName').textContent = result.name;
     document.getElementById('importDoneMeta').textContent =
       `Minecraft ${result.manifest.minecraftVersion} · ${result.manifest.fabricLoaderVersion} · ${result.files} files`;
     setImportStep(3);
     await loadInstances({ silent: true });
-    await loadServers({ silent: true });
   } catch (err) {
     toast(err.message, { error: true });
   } finally {
@@ -2673,13 +2712,9 @@ async function confirmImport() {
 }
 
 function setupImportModal() {
-  document.getElementById('importInstanceBtn')?.addEventListener('click', () => openImportModal('instance'));
-  document.getElementById('importServerBtn')?.addEventListener('click', () => openImportModal('server'));
+  document.getElementById('importInstanceBtn')?.addEventListener('click', () => openImportModal());
   document.querySelectorAll('[data-open-import]').forEach((button) => {
-    button.addEventListener('click', () => openImportModal('instance'));
-  });
-  document.querySelectorAll('[data-open-server-import]').forEach((button) => {
-    button.addEventListener('click', () => openImportModal('server'));
+    button.addEventListener('click', () => openImportModal());
   });
   document.getElementById('importChooseBtn')?.addEventListener('click', () => document.getElementById('importFile').click());
   document.getElementById('importFile')?.addEventListener('change', (event) => {
@@ -2690,28 +2725,23 @@ function setupImportModal() {
   document.getElementById('importCancelBtn')?.addEventListener('click', closeImportModal);
   document.getElementById('importConfirmBtn')?.addEventListener('click', confirmImport);
   document.getElementById('importDoneBtn')?.addEventListener('click', () => {
-    const mode = importState.mode;
     closeImportModal();
-    showView(mode === 'server' ? 'servers' : 'instances');
+    showView('instances');
   });
   document.getElementById('importModal')?.addEventListener('click', (event) => {
     if (event.target.id === 'importModal' && event.target.dataset.step === '1') closeImportModal();
   });
 }
 
-function openCreatePage(mode = 'instance') {
-  createState.mode = mode === 'server' ? 'server' : 'instance';
-  const isServer = createState.mode === 'server';
+function openCreatePage() {
   const title = document.getElementById('createTitle');
-  if (title) title.textContent = isServer ? 'Create Server' : 'Create Instance';
+  if (title) title.textContent = 'Create Instance';
   const subtitle = document.getElementById('createSubtitle');
   if (subtitle) {
-    subtitle.textContent = isServer
-      ? 'Name it, pick a Minecraft version and a loader — server files install on first START.'
-      : 'Name it, pick a Minecraft version and a loader, then hit CREATE.';
+    subtitle.textContent = 'Name it, pick a Minecraft version and a loader, then hit CREATE.';
   }
   const backLabel = document.getElementById('createBackLabel');
-  if (backLabel) backLabel.textContent = isServer ? 'Servers' : 'Instances';
+  if (backLabel) backLabel.textContent = 'Instances';
   document.getElementById('createError').hidden = true;
   document.getElementById('createForm').reset();
   createDropdowns.mc?.reset();
@@ -2722,20 +2752,16 @@ function openCreatePage(mode = 'instance') {
 }
 
 function closeCreatePage() {
-  location.hash = createState.mode === 'server' ? '#servers' : '#instances';
+  location.hash = '#instances';
 }
 
 function setupCreatePage() {
   createDropdowns.mc = createDropdown({ containerId: 'createMcDropdown', valueId: 'createMc' });
   createDropdowns.fabric = createDropdown({ containerId: 'createFabricDropdown', valueId: 'createFabric' });
 
-  document.getElementById('createInstanceBtn')?.addEventListener('click', () => openCreatePage('instance'));
-  document.getElementById('createServerBtn')?.addEventListener('click', () => openCreatePage('server'));
+  document.getElementById('createInstanceBtn')?.addEventListener('click', () => openCreatePage());
   document.querySelectorAll('[data-open-create]').forEach((button) => {
-    button.addEventListener('click', () => openCreatePage('instance'));
-  });
-  document.querySelectorAll('[data-open-create-server]').forEach((button) => {
-    button.addEventListener('click', () => openCreatePage('server'));
+    button.addEventListener('click', () => openCreatePage());
   });
   document.getElementById('createCancelBtn')?.addEventListener('click', closeCreatePage);
   document.getElementById('createBackBtn')?.addEventListener('click', closeCreatePage);
@@ -2751,643 +2777,30 @@ function setupCreatePage() {
       errorBox.textContent = 'Pick a Minecraft version and a loader version first';
       return;
     }
-    const isServer = createState.mode === 'server';
     try {
-      const result = await postJson(isServer ? '/api/servers' : '/api/instances', {
+      const result = await postJson('/api/instances', {
         name: document.getElementById('createName').value.trim(),
         minecraftVersion,
         fabricLoaderVersion,
       });
-      const created = result.server ?? result.instance;
+      const created = result.instance;
       toast(`${created.name} created`);
       await loadInstances({ silent: true });
-      await loadServers({ silent: true });
-      location.hash = `#instance/${encodeURIComponent(created.id)}`;
-    } catch (err) {
+      location.hash = `#instance/${encodeURIComponent(created.id)}`;    } catch (err) {
       errorBox.hidden = false;
       errorBox.textContent = err.message;
     }
   });
 }
 
-// ---------- Microsoft account + Modrinth search ----------
+// ---------- Settings + Modrinth search ----------
 
-const authState = { device: null, controller: null, linkWindow: null };
 const catalogState = { minecraft: false, fabric: false };
 const createDropdowns = { mc: null, fabric: null };
 const settingsDropdowns = { logLevel: null };
 let updatesVersionDropdown = null;
 const javaRuntimeState = { loaded: false, failed: false, list: [], chosen: null };
 let javaRtDropdown = null;
-
-async function loadSession({ silent = false } = {}) {
-  try {
-    const session = await fetchJson('/api/auth/session');
-    renderSession(session);
-    return session;
-  } catch (err) {
-    // backend หลุดแล้ว → disconnect page คุมหน้าจออยู่ ไม่ต้อง toast ซ้ำ
-    if (!silent && state.serverStatus !== 'offline') toast(err.message, { error: true });
-    return null;
-  }
-}
-
-// หมดอายุ → logout auto: server ลบ session เองตอนอ่าน ฝั่ง UI แค่ตั้งเวลาไปเรียกอ่านใหม่เมื่อครบอายุ
-let sessionLogoutTimer = null;
-function scheduleSessionLogout(expiresAt) {
-  if (sessionLogoutTimer !== null) {
-    clearTimeout(sessionLogoutTimer);
-    sessionLogoutTimer = null;
-  }
-  if (!Number.isFinite(expiresAt)) return;
-  sessionLogoutTimer = setTimeout(() => {
-    sessionLogoutTimer = null;
-    loadSession({ silent: true });
-  }, Math.max(expiresAt - Date.now(), 0) + 1500);
-}
-
-function renderSession(session) {
-  const signedIn = session?.signedIn === true;
-  state.signedIn = signedIn;
-  el.skinOpenBtn.hidden = !signedIn; // ปุ่มสกินข้างชื่อผู้เล่น — มีเฉพาะตอน sign in
-  // ป้ายชื่อใน sidebar เป็นปุ่มเปิด account โดยตรง (แทนปุ่ม Account เดิม) — ไม่ login โชว์ "SIGN IN"
-  el.accountPill.textContent = signedIn ? (session.username ?? '—') : 'SIGN IN';
-  const offlineForm = document.getElementById('offlineNameForm');
-  if (offlineForm) offlineForm.hidden = signedIn;
-  // ถูก sign out ระหว่างเปิดหน้าต่างสกินค้างไว้ → ปิดทันที ห้ามใช้สกินโดยไม่ login
-  if (!signedIn) closeSkinOverlay();
-  scheduleSessionLogout(signedIn ? session.expiresAt : null);
-}
-
-function authModal() {
-  return document.getElementById('authModal');
-}
-
-function showAuthError(message, targetId = 'authError') {
-  const box = document.getElementById(targetId);
-  box.hidden = false;
-  box.textContent = message;
-}
-
-function renderAuthModal(session) {
-  const signedIn = session?.signedIn === true;
-  document.getElementById('authSignedIn').hidden = !signedIn;
-  document.getElementById('authSignedOut').hidden = signedIn;
-  document.getElementById('authStartBtn').disabled = session?.clientConfigured === false;
-
-  if (signedIn) {
-    document.getElementById('authSessionError').hidden = true;
-    document.getElementById('authError').hidden = true;
-    document.getElementById('skinError').hidden = true;
-    const facts = document.getElementById('authFacts');
-    facts.replaceChildren();
-    const expires = session.expiresAt ? new Date(session.expiresAt).toLocaleString() : '—';
-    for (const [label, value] of [
-      ['Username', session.username],
-      ['UUID', session.uuid],
-      ['Xbox XUID', session.xuid ?? '—'],
-      ['Expires', expires],
-    ]) {
-      const item = document.createElement('div');
-      item.append(makeText('dt', '', label), makeText('dd', '', String(value)));
-      facts.appendChild(item);
-    }
-  }
-}
-
-function resetAuthStartUi() {
-  authState.device = null;
-  document.getElementById('authCodeStep').hidden = true;
-  document.getElementById('authWaiting').hidden = true;
-  document.getElementById('authError').hidden = true;
-  document.getElementById('authStartBtn').hidden = false;
-  document.getElementById('authCancelBtn').textContent = 'CANCEL';
-}
-
-async function openAuthModal() {
-  resetAuthStartUi();
-  authModal().hidden = false;
-  const session = await loadSession({ silent: true });
-  renderAuthModal(session ?? { signedIn: false });
-}
-
-function closeAuthModal() {
-  authState.device = null;
-  authState.controller?.abort();
-  authState.controller = null;
-  closeAuthLinkWindow();
-  authModal().hidden = true;
-}
-
-function closeAuthLinkWindow() {
-  try {
-    authState.linkWindow?.close();
-  } catch {
-    // หน้าต่างถูกปิดไปแล้ว
-  }
-  authState.linkWindow = null;
-}
-
-// คัดลอกโค้ดเข้า clipboard ของระบบ — ทำก่อน window.open เพราะหลังเปิด
-// หน้าต่างใหม่ document นี้เสียโฟกัสแล้ว Clipboard API จะถูกปฏิเสธ
-async function copyUserCode(code) {
-  try {
-    await navigator.clipboard.writeText(code);
-    return true;
-  } catch {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = code;
-      ta.setAttribute('readonly', '');
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand('copy');
-      ta.remove();
-      return ok;
-    } catch {
-      return false;
-    }
-  }
-}
-
-async function startAuth() {
-  const startBtn = document.getElementById('authStartBtn');
-  document.getElementById('authError').hidden = true;
-  startBtn.disabled = true;
-  startBtn.textContent = 'Starting…';
-
-  try {
-    const device = await postJson('/api/auth/device', {});
-    authState.device = device;
-    document.getElementById('authUserCode').textContent = device.userCode;
-    const link = document.getElementById('authLink');
-    const target = device.verificationUriComplete
-      ?? device.verificationUri
-      ?? 'https://microsoft.com/link';
-    link.textContent = (device.verificationUri ?? 'https://microsoft.com/link').replace(/^https?:\/\//, '');
-    if (await copyUserCode(device.userCode)) {
-      toast('Sign-in code copied to clipboard');
-    }
-    authState.linkWindow = window.open(target, '_blank');
-    document.getElementById('authMessage').textContent = device.message ?? '';
-    document.getElementById('authCodeStep').hidden = false;
-    document.getElementById('authWaiting').hidden = false;
-    startBtn.hidden = true;
-    document.getElementById('authCancelBtn').textContent = 'STOP';
-
-    await pollAuth(device);
-  } catch (err) {
-    showAuthError(err.message);
-  } finally {
-    startBtn.disabled = false;
-    startBtn.textContent = 'START SIGN IN';
-  }
-}
-
-async function pollAuth(device) {
-  authState.controller = new AbortController();
-  while (authState.device === device) {
-    if (device.expiresAt && Date.now() >= device.expiresAt) {
-      showAuthError('The code has expired — start again');
-      authState.device = null;
-      break;
-    }
-    try {
-      const result = await postJson('/api/auth/login', { deviceCode: device.deviceCode }, {
-        signal: authState.controller.signal,
-      });
-      authState.device = null;
-      authState.controller = null;
-      closeAuthLinkWindow();
-      renderSession(result.session);
-      renderAuthModal(result.session);
-      toast(`Signed in as ${result.session.username}`);
-      break;
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        authState.controller = null;
-        break;
-      }
-      if (err.code === 'AUTH_WAIT_TIMEOUT') continue;
-      showAuthError(err.message);
-      authState.device = null;
-      resetWaitingUi();
-      break;
-    }
-  }
-}
-
-function resetWaitingUi() {
-  document.getElementById('authWaiting').hidden = true;
-  document.getElementById('authStartBtn').hidden = false;
-  document.getElementById('authCancelBtn').textContent = 'CANCEL';
-}
-
-async function signOut() {
-  try {
-    await deleteJson('/api/auth/session');
-    renderSession({ signedIn: false });
-    renderAuthModal({ signedIn: false });
-    resetAuthStartUi();
-    toast('Signed out');
-  } catch (err) {
-    showAuthError(err.message, 'authSessionError');
-  }
-}
-
-// ---------- Skin change ----------
-
-function bufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  const CHUNK = 0x8000; // ตัดเป็นท่อนละ 32KB กัน stack overflow ของ apply
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
-}
-
-function skinFile() {
-  return document.getElementById('skinOverlayFile');
-}
-
-function selectedSkinFile() {
-  const input = skinFile();
-  const file = input?.files?.[0] ?? null;
-  if (!file) {
-    showAuthError('Choose a PNG skin file first', 'skinError');
-    return null;
-  }
-  return file;
-}
-
-function previewSkinFile(file) {
-  // preview แสดงเฉพาะ "สกินที่ใช้อยู่ตอนนี้" เสมอ — การเลือกไฟล์แค่เตรียมไว้อัปโหลด (ชื่อไฟล์โชว์ข้างปุ่ม)
-  skinOverlayState.source = 'file';
-  skinOverlayState.name = file.name;
-  setSkinFileName(file.name);
-  const uploadBtn = document.getElementById('skinUploadBtn');
-  if (uploadBtn) uploadBtn.disabled = false;
-  renderSkinOverlayMeta(
-    `${file.name} chosen — preview always shows the skin in use · press UPLOAD SKIN to apply it`,
-  );
-}
-
-// ---------- Skin overlay (หน้าต่างสกิน: แสดง skin ที่ใช้อยู่ + เปลี่ยนได้) ----------
-
-const skinOverlayState = { source: 'active', url: null, name: '', image: null, placeholder: 'No skin preview' };
-
-// hash ใน texture url (https://textures.minecraft.net/texture/<hash>) ใช้ชี้หาไฟล์ใน cache บนเครื่อง
-function skinTextureHash(url) {
-  const match = /\/texture\/([a-f0-9]{40,64})$/.exec(String(url ?? ''));
-  return match ? match[1] : null;
-}
-
-// เดา slim/classic จากพิกเซล: แขนขวาของ slim จบแค่ x=53 (classic ถึง x=55)
-// → คอลัมน์ 54–55 แถว 20–31 ถ้าโปร่งใสทั้งหมด = slim (ไม่งั้นแขนโดนตัดเวลาวาดแบบ 4px)
-function detectSlimModel(image) {
-  try {
-    const w = image.naturalWidth;
-    const h = image.naturalHeight;
-    if (w !== 64 || (h !== 64 && h !== 32)) return null;
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return null;
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(image, 0, 0);
-    const strip = ctx.getImageData(54, 20, 2, 12).data; // 2 คอลัมน์ × 12 แถว
-    for (let i = 3; i < strip.length; i += 4) {
-      if (strip[i] > 0) return 'classic'; // มีพิกเซลทึบ → classic
-    }
-    return 'slim';
-  } catch {
-    return null; // อ่านพิกเซลไม่ได้ → ไม่เดา ใช้ค่าใน dropdown เดิม
-  }
-}
-let skinVariantDropdown = null;
-
-function skinOverlayEl() {
-  return document.getElementById('skinOverlay');
-}
-
-function setSkinFileName(text) {
-  const node = document.getElementById('skinFileName');
-  if (node) node.textContent = text;
-}
-
-function renderSkinOverlayMeta(text) {
-  const meta = document.getElementById('skinOverlayMeta');
-  if (meta && text !== undefined) meta.textContent = text;
-  return meta;
-}
-
-function chosenSkinVariant() {
-  return document.getElementById('skinVariantValue')?.value === 'slim' ? 'slim' : 'classic';
-}
-
-// วาดตัวละครจาก texture layout ของ Minecraft (64x64 หรือ 64x32 แบบ mirror)
-function drawSkinFigure(ctx, tex, { x, y, scale, armW, legacy, back }) {
-  const s = scale;
-  const depth = 4;
-  const copy = (sx, sy, sw, sh, dx, dy) =>
-    ctx.drawImage(tex, sx, sy, sw, sh, x + dx * s, y + dy * s, sw * s, sh * s);
-
-  const headX = back ? 24 : 8;
-  const bodyX = back ? 32 : 20;
-  const rightArmX = back ? 44 + armW + depth : 44;
-  const leftArmX = back ? 36 + armW + depth : 36;
-  const rightLegX = back ? 12 : 4;
-  const leftLegX = back ? 28 : 20;
-  const limbY = 20;
-  const leftLimbY = legacy ? 20 : 52;
-  const contentW = armW * 2 + 8;
-
-  copy(headX, 8, 8, 8, Math.floor((contentW - 8) / 2), 0);
-  copy(rightArmX, limbY, armW, 12, 0, 8);
-  copy(bodyX, limbY, 8, 12, armW, 8);
-  copy(legacy ? rightArmX : leftArmX, legacy ? limbY : leftLimbY, armW, 12, armW + 8, 8);
-  copy(rightLegX, limbY, 4, 12, armW, 20);
-  copy(legacy ? rightLegX : leftLegX, legacy ? limbY : leftLimbY, 4, 12, armW + 4, 20);
-}
-
-function drawSkinOverlay() {
-  const canvas = document.getElementById('skinOverlayCanvas');
-  const image = skinOverlayState.image;
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-  ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  if (!image) {
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-    ctx.font = '13px ui-monospace, SFMono-Regular, monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(skinOverlayState.placeholder ?? 'No skin preview', canvas.width / 2, canvas.height / 2);
-    return;
-  }
-
-  const armW = chosenSkinVariant() === 'slim' ? 3 : 4;
-  const legacy = image.naturalHeight === 32;
-  const scale = 10;
-  const figureW = (armW * 2 + 8) * scale;
-  const figureH = 32 * scale;
-  const gap = 48;
-  const offsetX = Math.round((canvas.width - (figureW * 2 + gap)) / 2);
-  const offsetY = 16;
-
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
-  ctx.font = '11px ui-monospace, SFMono-Regular, monospace';
-  ctx.textAlign = 'center';
-
-  for (let i = 0; i < 2; i += 1) {
-    const x = offsetX + i * (figureW + gap);
-    drawSkinFigure(ctx, image, { x, y: offsetY, scale, armW, legacy, back: i === 1 });
-    ctx.fillText(i === 1 ? 'BACK' : 'FRONT', x + figureW / 2, offsetY + figureH + 18);
-  }
-}
-
-function loadSkinImage(url) {
-  const image = new Image();
-  image.addEventListener('load', () => {
-    skinOverlayState.image = image;
-    // ปรับ model อัตโนมัติจากพิกเซลจริง (skin slim วาดเป็น 4px = แขนโดนตัด)
-    const detected = detectSlimModel(image);
-    const input = document.getElementById('skinVariantValue');
-    if (detected && input && input.value !== detected) {
-      skinVariantDropdown?.setValue(detected, { silent: true });
-    }
-    drawSkinOverlay();
-  });
-  image.addEventListener('error', () => {
-    // รูปจาก data URL โหลดไม่ขึ้น → บอกสาเหตุตรง ๆ แทนที่จะค้างว่าง
-    skinOverlayState.image = null;
-    renderSkinOverlayMeta('Could not load the skin image');
-    drawSkinOverlay();
-  });
-  image.src = url;
-}
-
-// skin ที่ใช้อยู่ตอนนี้: ข้อมูลบัญชีจาก server แล้วดึงรูปจาก cache บนเครื่องเท่านั้น (ไม่ยิงออกไปโหลดจากเน็ต)
-// freshDataUrl = รูปที่เพิ่งอัปโหลดสำเร็จ (bytes อยู่ฝั่ง client แล้ว) — server เก็บลง cache แล้วเหมือนกัน แต่ใช้รูปนี้ตรง ๆ เร็วสุด
-async function loadActiveSkin({ freshDataUrl = null } = {}) {
-  renderSkinOverlayMeta('Loading the skin in use…');
-  skinOverlayState.placeholder = 'No skin preview';
-
-  let profile;
-  try {
-    profile = await fetchJson('/api/minecraft/skin');
-  } catch (err) {
-    showAuthError(err.message, 'skinError');
-    renderSkinOverlayMeta('Could not read your Minecraft profile');
-    drawSkinOverlay();
-    return;
-  }
-
-  const skins = Array.isArray(profile.skins) ? profile.skins : [];
-  const active = skins.find((entry) => entry.state === 'ACTIVE') ?? skins[0] ?? null;
-  skinOverlayState.source = 'active';
-  skinOverlayState.image = null;
-  skinOverlayState.url = null;
-  skinOverlayState.name = '';
-
-  if (!active) {
-    skinOverlayState.placeholder = 'Default skin';
-    renderSkinOverlayMeta('Default skin — nothing custom set on this account');
-    drawSkinOverlay();
-    return;
-  }
-
-  if (freshDataUrl) {
-    // เพิ่งอัปโหลดสำเร็จ → แสดงรูปที่เพิ่งส่งไปเลย (มันคือสกินที่ใช้อยู่ตอนนี้)
-    // server เก็บลง cache แล้ว — ปิดเปิดแอปใหม่ก็ยังเห็นรูปนี้ผ่าน /api/minecraft/skin/image
-    skinOverlayState.url = freshDataUrl;
-    renderSkinOverlayMeta(
-      `Skin in use${profile.username ? ` — ${profile.username}` : ''} · just uploaded`,
-    );
-    loadSkinImage(freshDataUrl);
-    return;
-  }
-
-  try {
-    const hash = skinTextureHash(active.url);
-    const local = await fetchJson(`/api/minecraft/skin/image${hash ? `?hash=${hash}` : ''}`);
-    skinOverlayState.url = local.dataUrl;
-    renderSkinOverlayMeta(
-      `Skin in use${profile.username ? ` — ${profile.username}` : ''} · from this machine's skin cache · preview always shows the skin in use`,
-    );
-    loadSkinImage(local.dataUrl);
-  } catch (err) {
-    if (err.status === 404) {
-      skinOverlayState.placeholder = 'Skin not on this machine yet';
-      renderSkinOverlayMeta('Not cached on this machine yet — upload it here or launch the game once');
-      drawSkinOverlay();
-      return;
-    }
-    showAuthError(err.message, 'skinError');
-    renderSkinOverlayMeta('Could not load the skin image');
-    drawSkinOverlay();
-  }
-}
-
-async function openSkinOverlay() {
-  // ห้ามเปิดหน้าต่างสกินโดยไม่ได้ sign in (ปุ่มถูกซ่อนอยู่แล้ว — guard กันเรียกซ้ำผ่านช่องทางอื่น)
-  if (!state.signedIn) return;
-  const modal = skinOverlayEl();
-  if (!modal) return;
-  document.getElementById('skinError').hidden = true;
-  // เปิดทุกครั้ง = แสดง skin ที่ใช้อยู่ตอนนั้น (ล้างไฟล์ที่เลือกค้างไว้)
-  skinOverlayState.source = 'active';
-  skinOverlayState.url = null;
-  skinOverlayState.name = '';
-  skinOverlayState.image = null;
-  skinOverlayState.placeholder = 'No skin preview';
-  setSkinFileName('No file chosen');
-  const input = skinFile();
-  if (input) input.value = '';
-  const uploadBtn = document.getElementById('skinUploadBtn');
-  if (uploadBtn) uploadBtn.disabled = true;
-  modal.hidden = false;
-  await loadActiveSkin();
-}
-
-function closeSkinOverlay() {
-  const modal = skinOverlayEl();
-  if (modal) modal.hidden = true;
-}
-
-async function uploadSkin() {
-  const file = selectedSkinFile();
-  if (!file) return;
-  const button = document.getElementById('skinUploadBtn');
-  const label = button?.textContent;
-  if (button) {
-    button.disabled = true;
-    button.textContent = 'UPLOADING…';
-  }
-  document.getElementById('skinError').hidden = true;
-  try {
-    const data = bufferToBase64(await file.arrayBuffer());
-    await postJson('/api/minecraft/skin', {
-      data,
-      variant: chosenSkinVariant(),
-      filename: file.name,
-    });
-    toast('Skin updated');
-    // แสดง skin ที่ใช้อยู่ตัวใหม่ทันที — ใช้รูปที่เพิ่งอัปโหลด (cache ยังไม่มีสกินใหม่จนกว่าเกมจะโหลด)
-    await loadActiveSkin({ freshDataUrl: `data:image/png;base64,${data}` });
-  } catch (err) {
-    showAuthError(err.message, 'skinError');
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = label;
-    }
-  }
-}
-
-async function resetSkin() {
-  const button = document.getElementById('skinResetBtn');
-  const label = button?.textContent;
-  if (button) {
-    button.disabled = true;
-    button.textContent = 'RESETTING…';
-  }
-  document.getElementById('skinError').hidden = true;
-  try {
-    await deleteJson('/api/minecraft/skin');
-    toast('Skin reset to default');
-    setSkinFileName('No file chosen');
-    const input = skinFile();
-    if (input) input.value = '';
-    const uploadBtn = document.getElementById('skinUploadBtn');
-    if (uploadBtn) uploadBtn.disabled = true;
-    await loadActiveSkin();
-  } catch (err) {
-    showAuthError(err.message, 'skinError');
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = label;
-    }
-  }
-}
-
-function setupSkinControls() {
-  skinVariantDropdown = createDropdown({ containerId: 'skinVariantDropdown', valueId: 'skinVariantValue' });
-  skinVariantDropdown?.setOptions([
-    { value: 'classic', label: 'Classic (wide arms)' },
-    { value: 'slim', label: 'Slim (narrow arms)' },
-  ]);
-  skinVariantDropdown?.setValue('classic', { silent: true });
-
-  // ปุ่ม SKIN ข้างชื่อผู้เล่น (sidebar) → เปิดหน้าต่างสกิน
-  document.getElementById('skinOpenBtn')?.addEventListener('click', openSkinOverlay);
-
-  // CHOOSE FILE แบบ custom (ซ่อน input ไฟล์ของระบบไว้ข้างใน)
-  document.getElementById('skinChooseBtn')?.addEventListener('click', () => skinFile()?.click());
-  skinFile()?.addEventListener('change', () => {
-    document.getElementById('skinError').hidden = true;
-    const file = skinFile()?.files?.[0];
-    if (file) previewSkinFile(file);
-  });
-
-  document.getElementById('skinUploadBtn')?.addEventListener('click', uploadSkin);
-  document.getElementById('skinResetBtn')?.addEventListener('click', resetSkin);
-  document.getElementById('skinOverlayClose')?.addEventListener('click', closeSkinOverlay);
-  document.getElementById('skinOverlay')?.addEventListener('click', (event) => {
-    if (event.target?.id === 'skinOverlay') closeSkinOverlay();
-  });
-  document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
-    const modal = skinOverlayEl();
-    if (modal && !modal.hidden) closeSkinOverlay();
-  });
-  // เปลี่ยน model แล้ววาดตัวอย่างใหม่ทันทีถ้าหน้าต่างสกินเปิดอยู่
-  document.getElementById('skinVariantValue')?.addEventListener('input', () => {
-    if (skinOverlayEl() && !skinOverlayEl().hidden) drawSkinOverlay();
-  });
-}
-
-function setupAuth() {
-  setupSkinControls();
-  el.accountPill?.addEventListener('click', openAuthModal);
-  document.getElementById('accountsNavBtn')?.addEventListener('click', openAuthModal);
-  document.getElementById('authStartBtn')?.addEventListener('click', startAuth);
-  document.getElementById('authCopyBtn')?.addEventListener('click', async () => {
-    const code = authState.device?.userCode;
-    if (!code) return;
-    const btn = document.getElementById('authCopyBtn');
-    if (await copyUserCode(code)) {
-      toast('Sign-in code copied to clipboard');
-      if (btn) {
-        btn.textContent = 'COPIED';
-        setTimeout(() => {
-          btn.textContent = 'COPY';
-        }, 1500);
-      }
-    } else {
-      toast('Copy failed — select the code and copy it manually');
-    }
-  });
-  document.getElementById('authCancelBtn')?.addEventListener('click', () => {
-    if (authState.device) {
-      authState.controller?.abort();
-      closeAuthLinkWindow();
-      resetAuthStartUi();
-    } else {
-      closeAuthModal();
-    }
-  });
-  document.getElementById('authCloseBtn')?.addEventListener('click', closeAuthModal);
-  document.getElementById('authSignOutBtn')?.addEventListener('click', signOut);
-  authModal()?.addEventListener('click', (event) => {
-    if (event.target.id === 'authModal') closeAuthModal();
-  });
-}
 
 function setupOfflineNameForm() {
   const form = document.getElementById('offlineNameForm');
@@ -3544,7 +2957,6 @@ function setupInstanceIcons() {
       await deleteJson(`/api/instances/${encodeURIComponent(instance.id)}/icon`);
       toast('Icon removed');
       await loadInstances({ silent: true });
-      if (instance.type === 'server') await loadServers({ silent: true });
       await loadInstanceDetail(instance.id);
     } catch (err) {
       if (state.serverStatus !== 'offline') toast(err.message, { error: true });
@@ -3620,31 +3032,49 @@ function renderJavaRuntimeCard() {
   const actionBtn = document.getElementById('javaRtActionBtn');
   const deleteBtn = document.getElementById('javaRtDeleteBtn');
   const valueInput = document.getElementById('javaRtValue');
+  const hint = document.getElementById('javaRtHint');
   if (!versionCell || !releasedCell || !stateCell || !pill || !actionBtn || !valueInput) return;
 
-  const name = valueInput.value;
+  const name = valueInput.value.trim();
   const runtime = javaRuntimeState.list.find((entry) => entry.name === name) ?? null;
-  versionCell.textContent = runtime ? `Java ${runtime.javaVersion}` : '—';
-  releasedCell.textContent = runtime?.released ?? '—';
-  stateCell.textContent = runtime
-    ? runtime.downloaded
-      ? 'Downloaded'
-      : 'Not downloaded'
-    : '—';
+  const chosen = javaRuntimeState.chosen ?? null;
+  const loading = !javaRuntimeState.loaded && !javaRuntimeState.failed;
+
+  // pill = สถานะโดยรวมว่ามี runtime ถูกเลือกหรือยัง — ไม่ใช่ของแถวที่กำลังเปิดดู
+  if (loading) {
+    pill.textContent = '…';
+    pill.classList.remove('pill-selected');
+  } else {
+    pill.textContent = chosen ? 'SELECTED' : 'NOT SELECTED';
+    pill.classList.toggle('pill-selected', Boolean(chosen));
+  }
+
+  if (loading) {
+    versionCell.textContent = 'Loading…';
+    releasedCell.textContent = 'Loading…';
+    stateCell.textContent = 'Loading runtime list…';
+  } else if (!runtime) {
+    versionCell.textContent = name ? 'Not in the list' : 'Not selected yet';
+    releasedCell.textContent = name ? 'Not in the list' : 'Not selected yet';
+    stateCell.textContent = name ? 'Missing from the runtime list' : 'Pick a runtime from the list above';
+  } else {
+    versionCell.textContent = `Java ${runtime.javaVersion}`;
+    releasedCell.textContent = runtime.released ?? 'Unknown';
+    stateCell.textContent = runtime.downloaded ? 'Downloaded' : 'Not downloaded';
+  }
 
   // ปุ่ม DELETE เห็นเฉพาะ runtime ที่โหลดมาแล้ว (โหลดค้างอยู่/ยังไม่โหลด → ซ่อน)
   if (deleteBtn) deleteBtn.hidden = !(runtime && runtime.downloaded);
 
-  // pill = สถานะ (ยังไม่เลือก → —), ปุ่ม = การกระทำ (โหลดแล้วยังไม่เลือก → SELECT)
-  const selected = Boolean(runtime) && runtime.name === javaRuntimeState.chosen;
-  pill.textContent = selected ? 'SELECTED' : '—';
+  // ปุ่ม = การกระทำของแถวที่เปิดดู (ยังไม่เปิดแถวไหน → SELECT ปิดไว้เป็นนัยว่าต้องเลือกก่อน)
+  const selected = Boolean(runtime) && runtime.name === chosen;
   if (!runtime) {
-    actionBtn.textContent = '—';
+    actionBtn.textContent = 'SELECT';
     actionBtn.disabled = true;
     actionBtn.dataset.mode = 'none';
   } else if (!runtime.downloaded) {
     actionBtn.textContent = 'DOWNLOAD';
-    actionBtn.disabled = javaRuntimeState.list.length === 0;
+    actionBtn.disabled = false;
     actionBtn.dataset.mode = 'download';
   } else if (selected) {
     actionBtn.textContent = 'SELECTED';
@@ -3654,6 +3084,24 @@ function renderJavaRuntimeCard() {
     actionBtn.textContent = 'SELECT';
     actionBtn.disabled = false;
     actionBtn.dataset.mode = 'select';
+  }
+
+  // คำใบ้ใต้หัวการ์ด — บอกชัดว่าขาดอะไรก่อนกด PLAY (ซ่อนเมื่อเลือกแล้ว)
+  if (hint) {
+    if (loading) {
+      hint.hidden = false;
+      hint.textContent = 'Loading the runtime list…';
+    } else if (chosen) {
+      hint.hidden = true;
+      hint.textContent = '';
+    } else {
+      hint.hidden = false;
+      hint.textContent = javaRuntimeState.failed
+        ? 'The runtime list could not be loaded — fix the error below and reopen Settings.'
+        : javaRuntimeState.list.length === 0
+          ? 'No runtimes are available right now.'
+          : 'PLAY needs a selected runtime — pick a downloaded one and press SELECT.';
+    }
   }
 }
 
@@ -3748,7 +3196,7 @@ async function loadJavaRuntimes({ force = false } = {}) {
 function setupJavaRuntimeCard() {
   javaRtDropdown = createDropdown({ containerId: 'javaRtDropdown', valueId: 'javaRtValue' });
   javaRtDropdown?.setOptions([]);
-  javaRtDropdown?.setPlaceholder('—');
+  javaRtDropdown?.setPlaceholder('Select a runtime…');
 
   const errorBox = document.getElementById('javaRtError');
   const valueInput = document.getElementById('javaRtValue');
@@ -3761,7 +3209,7 @@ function setupJavaRuntimeCard() {
     if (errorBox) errorBox.hidden = true;
   });
 
-  // ปุ่มเดียว 4 สถานะ: — (ยังไม่มี runtime) / DOWNLOAD (ยังไม่โหลด) / SELECT (โหลดแล้วยังไม่เลือก) / SELECTED (เลือกแล้ว)
+  // ปุ่มเดียว 4 สถานะ: SELECT ปิดไว้ (ยังไม่ได้เปิดดูแถวไหน) / DOWNLOAD / SELECT (โหลดแล้ว) / SELECTED
   actionBtn?.addEventListener('click', async () => {
     const name = valueInput?.value.trim();
     const mode = actionBtn.dataset.mode;
@@ -3843,6 +3291,9 @@ function setupJavaRuntimeCard() {
       renderJavaRuntimeCard();
     }
   });
+
+  // วาดสถานะเริ่มต้นทันที (กำลังโหลด list) แทนค่า …/— ที่ฝังอยู่ใน HTML
+  renderJavaRuntimeCard();
 }
 
 function normalizeDropdownOption(option) {
@@ -4059,6 +3510,35 @@ async function loadCatalogOptions() {
   }
 }
 
+const searchListLoaded=new Set();
+const searchCheckJobs=new Map();
+async function ensureSearchCheck(kind){
+  const instance=instancesState.detail;if(!instance)return;
+  const key=`${instance.id}:${kind}`;
+  if(!searchListLoaded.has(key)){
+    if(kind==='mods')await loadMods();else await loadPackList(kind);
+    searchListLoaded.add(key);
+  }
+  const files=kind==='mods'?instancesState.mods:instancesState.packs[kind];
+  if(!Array.isArray(files)||files.length===0)return;
+  const checks=instancesState.checks[kind]??[];
+  const names=new Set(checks.map(item=>item.filename));
+  if(files.every(file=>names.has(file.filename)))return;
+  if(searchCheckJobs.has(key))return searchCheckJobs.get(key);
+  const job=(async()=>{
+    while(instancesState.checking&&instancesState.detail?.id===instance.id)await new Promise(resolve=>setTimeout(resolve,120));
+    if(instancesState.detail?.id!==instance.id)return;
+    const latest=instancesState.checks[kind]??[];const present=new Set(latest.map(item=>item.filename));
+    if(files.every(file=>present.has(file.filename)))return;
+    await runInstanceCheck([kind],{render:renderForKind(kind),silent:true});
+  })().finally(()=>searchCheckJobs.delete(key));
+  searchCheckJobs.set(key,job);return job;
+}
+function projectAlreadyInstalled(projectId,kind){
+  if(!projectId)return false;
+  return (instancesState.checks[kind]??[]).some(item=>item.projectId===projectId&&item.status!=='unmatched');
+}
+
 async function runModSearch(query) {
   const results = document.getElementById('modResults');
   const errorBox = document.getElementById('modSearchError');
@@ -4069,16 +3549,23 @@ async function runModSearch(query) {
   results.appendChild(makeText('p', 'muted', isPopular ? 'Loading popular mods…' : 'Searching…'));
 
   try {
-    const data = await fetchJson(`/api/modrinth/search?q=${encodeURIComponent(query)}&limit=8`);
+    await ensureSearchCheck('mods');
+    const side = currentModSide();
+    const data = await fetchJson(
+      `/api/modrinth/search?q=${encodeURIComponent(query)}&limit=40&type=mod`
+    );
+    const hits = (data.hits ?? []).filter((hit) => modSupportsSide(hit, side)).slice(0, 8);
     results.replaceChildren();
-    if (!data.hits || data.hits.length === 0) {
+    if (hits.length === 0) {
       results.appendChild(
-        makeText('p', 'muted', isPopular ? 'No popular mods right now' : `No results for “${query}”`)
+        makeText('p', 'muted', isPopular
+          ? `No popular mods tagged for the ${side} side right now.`
+          : `No ${side}-compatible mods found for “${query}”`)
       );
       results.hidden = false;
       return;
     }
-    for (const hit of data.hits) results.appendChild(modResultRow(hit));
+    for (const hit of hits) results.appendChild(modResultRow(hit));
     results.hidden = false;
   } catch (err) {
     results.replaceChildren();
@@ -4095,6 +3582,7 @@ function modIcon(hit) {
   img.className = 'mod-icon';
   img.alt = '';
   img.loading = 'lazy';
+  img.decoding = 'async';
   img.referrerPolicy = 'no-referrer';
   img.src = hit.iconUrl;
   img.addEventListener('error', () => img.replaceWith(fallback), { once: true });
@@ -4113,11 +3601,17 @@ function modResultRow(hit, { kind = 'mods' } = {}) {
     makeText('span', 'mod-size', `${Number(hit.downloads).toLocaleString()} downloads`)
   );
   if (hit.description) info.appendChild(makeText('span', 'mod-desc', hit.description));
+  const sideTags = modSideLabel(hit);
+  if (sideTags) info.appendChild(makeText('span', 'mod-side-tags', `SIDE: ${sideTags}`));
   row.appendChild(info);
+  row.appendChild(modrinthProjectButton(hit.projectId, kind));
 
-  const install = makeText('button', 'btn btn-primary btn-small', 'INSTALL');
+  const installed=projectAlreadyInstalled(hit.projectId,kind);
+  const install = makeText('button', installed?'btn btn-small':'btn btn-primary btn-small', installed?'INSTALLED':'INSTALL');
   install.type = 'button';
-  install.addEventListener('click', () => installFromSearch(hit, install, { kind }));
+  install.disabled=installed;
+  if(installed)install.title='This project already has a file installed in this instance';
+  else install.addEventListener('click', () => installFromSearch(hit, install, { kind }));
   row.appendChild(install);
   return row;
 }
@@ -4131,19 +3625,20 @@ async function installFromSearch(hit, button, { kind = 'mods' } = {}) {
   button.textContent = '…';
 
   try {
-    // mods กรองด้วย Minecraft + Fabric / packs (resource+shader) ไม่กรองอะไรเลย → โชว์ทุกเวอร์ชีให้ผู้ใช้เลือกเอง
+    // ทุกชนิดกรอง tag Minecraft ให้ตรง instance; mods กรอง Fabric เพิ่ม
     const versionsUrl =
       `/api/modrinth/project/${encodeURIComponent(hit.projectId)}/versions` +
-      (isMod
-        ? `?game=${encodeURIComponent(instance.minecraftVersion)}&loader=fabric`
-        : '');
+      `?game=${encodeURIComponent(instance.minecraftVersion)}${isMod ? '&loader=fabric' : ''}`;
     const data = await fetchJson(versionsUrl);
-    const versions = data.versions ?? [];
+    const versions = (data.versions ?? []).filter((version) =>
+      Array.isArray(version.gameVersions) && version.gameVersions.includes(instance.minecraftVersion)
+      && (!isMod || (Array.isArray(version.loaders) && version.loaders.includes('fabric')))
+    );
     if (versions.length === 0) {
       throw new Error(
         isMod
           ? `${hit.title} has no downloadable file for Minecraft ${instance.minecraftVersion} + Fabric`
-          : `${hit.title} has no versions on Modrinth`
+          : `${hit.title} has no version tagged for Minecraft ${instance.minecraftVersion}`
       );
     }
     openVersionPicker(hit, versions, { kind, button });
@@ -4176,24 +3671,26 @@ async function openVersionsFor(filename, kind, button) {
       throw new Error(`${filename} isn't identified on Modrinth — this file has no project to browse`);
     }
     const isMod = kind === 'mods';
-    // mods กรอง Minecraft + Fabric / packs โชว์ทุกเวอร์ชีให้เลือกเอง (รีซอสไม่สน MC version)
+    // ทุกชนิดกรอง tag Minecraft ให้ตรง instance; mods กรอง Fabric เพิ่ม
     const versionsUrl =
       `/api/modrinth/project/${encodeURIComponent(check.projectId)}/versions` +
-      (isMod
-        ? `?game=${encodeURIComponent(instance.minecraftVersion)}&loader=fabric`
-        : '');
+      `?game=${encodeURIComponent(instance.minecraftVersion)}${isMod ? '&loader=fabric' : ''}`;
     const data = await fetchJson(versionsUrl);
-    const versions = data.versions ?? [];
+    const versions = (data.versions ?? []).filter((version) =>
+      Array.isArray(version.gameVersions) && version.gameVersions.includes(instance.minecraftVersion)
+      && (!isMod || (Array.isArray(version.loaders) && version.loaders.includes('fabric')))
+    );
     if (versions.length === 0) {
       throw new Error(
         isMod
           ? `No versions of ${filename} for Minecraft ${instance.minecraftVersion} + Fabric`
-          : `No versions of ${filename} on Modrinth`
+          : `No versions of ${filename} tagged for Minecraft ${instance.minecraftVersion}`
       );
     }
     button.disabled = false;
     button.textContent = original;
-    openVersionPicker({ projectId: check.projectId, title: filename }, versions, {
+    const projectInfo = isMod ? await fetchModProjectInfo(check.projectId) : null;
+    openVersionPicker({ projectId: check.projectId, title: filename, ...(projectInfo ?? {}) }, versions, {
       kind,
       button,
       replaceFilename: filename,
@@ -4220,6 +3717,10 @@ function openVersionPicker(hit, versions, { kind = 'mods', button = null, replac
     kind === 'mods'
       ? 'Compatible with this instance (Minecraft + Fabric). Newest first.'
       : 'Every version on Modrinth — not filtered by Minecraft. Newest first.';
+  const sideWarning = document.getElementById('versionPickSideWarning');
+  const warningText = kind === 'mods' ? modSideWarning(hit) : '';
+  sideWarning.hidden = !warningText;
+  sideWarning.textContent = warningText;
   const error = document.getElementById('versionPickError');
   error.hidden = true;
   error.textContent = '';
@@ -4360,18 +3861,25 @@ async function runPackSearch(query, panel) {
   results.appendChild(makeText('p', 'muted', isPopular ? 'Loading popular…' : 'Searching…'));
 
   try {
+    await ensureSearchCheck(kind);
+    const instance = instancesState.detail;
+    if (!instance) return;
+    const game = encodeURIComponent(instance.minecraftVersion);
     const data = await fetchJson(
-      `/api/modrinth/search?q=${encodeURIComponent(query)}&limit=8&type=${type}`
+      `/api/modrinth/search?q=${encodeURIComponent(query)}&limit=8&type=${type}&game=${game}`
+    );
+    const hits = (data.hits ?? []).filter((hit) =>
+      Array.isArray(hit.gameVersions) && hit.gameVersions.includes(instance.minecraftVersion)
     );
     results.replaceChildren();
-    if (!data.hits || data.hits.length === 0) {
+    if (hits.length === 0) {
       results.appendChild(
         makeText('p', 'muted', isPopular ? 'No popular entries right now' : `No results for “${query}”`)
       );
       results.hidden = false;
       return;
     }
-    for (const hit of data.hits) results.appendChild(modResultRow(hit, { kind }));
+    for (const hit of hits) results.appendChild(modResultRow(hit, { kind }));
     results.hidden = false;
   } catch (err) {
     results.replaceChildren();
@@ -4430,7 +3938,6 @@ function main() {
   setupImportModal();
   setupExportModal();
   setupCreatePage();
-  setupAuth();
   setupServerConfigForm();
   setupOfflineNameForm();
   setupDataDirForm();
@@ -4442,7 +3949,6 @@ function main() {
   setupPackSearch();
   setupVersionPicker();
   refresh();
-  loadSession({ silent: true });
   setInterval(refresh, REFRESH_MS);
   setInterval(pollInstanceStatus, STATUS_POLL_MS);
 }

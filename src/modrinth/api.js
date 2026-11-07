@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import { CorruptDataError, NotFoundError, ValidationError } from '../core/errors.js';
 import { httpClient } from '../net/http.js';
@@ -173,23 +172,10 @@ function normalizeHit(entry) {
     serverSide: optionalString(entry.server_side),
     iconUrl: optionalString(entry.icon_url),
     color: typeof entry.color === 'number' ? entry.color : null,
-    license: optionalString(entry.license),
     latestVersionId: optionalNullableString(entry.latest_version),
     gameVersions: requireStringArray(entry.versions, 'versions', where),
     dateCreated: optionalString(entry.date_created),
     dateModified: optionalString(entry.date_modified),
-  });
-}
-
-function normalizeLicense(value, where = 'project') {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== 'object' || Array.isArray(value)) {
-    throw responseInvalid(where, `Modrinth ${where} has an invalid "license"`, { field: 'license' });
-  }
-  return Object.freeze({
-    id: requireString(value.id, 'license.id', where),
-    name: requireString(value.name, 'license.name', where),
-    url: optionalNullableString(value.url),
   });
 }
 
@@ -232,7 +218,6 @@ export function normalizeProject(entry) {
     loaders: requireStringArray(entry.loaders, 'loaders', where),
     clientSide: optionalString(entry.client_side),
     serverSide: optionalString(entry.server_side),
-    license: normalizeLicense(entry.license),
     versions: requireStringArray(entry.versions, 'versions', where),
     iconUrl: optionalString(entry.icon_url),
     color: typeof entry.color === 'number' ? entry.color : null,
@@ -294,6 +279,41 @@ function requireInt(value, field, { min, max, code }) {
   return value;
 }
 
+// Artwork metadata has its own slot; update checks never wait behind artwork.
+const modrinthLanes = {
+  updates: { queue: [], active: 0, limit: 2, nextStart: 0, timer: null },
+  artwork: { queue: [], active: 0, limit: 1, nextStart: 0, timer: null },
+};
+let modrinthBlockedUntil = 0;
+let modrinthNextStart = 0;
+function drainModrinthLane(lane) {
+  if (lane.timer || lane.active >= lane.limit || !lane.queue.length) return;
+  const wait = Math.max(0, Math.max(lane.nextStart, modrinthNextStart, modrinthBlockedUntil) - Date.now());
+  if (wait) {
+    lane.timer = setTimeout(() => {
+      lane.timer = null;
+      drainModrinthLane(lane);
+    }, wait);
+    return;
+  }
+  const { work, resolve, reject } = lane.queue.shift();
+  lane.active += 1;
+  lane.nextStart = Date.now() + 210;
+  modrinthNextStart = lane.nextStart;
+  Promise.resolve().then(work).then(resolve, reject).finally(() => {
+    lane.active -= 1;
+    drainModrinthLane(lane);
+  });
+  drainModrinthLane(lane);
+}
+function queueModrinthRequest(work, laneName = 'updates') {
+  const lane = modrinthLanes[laneName];
+  return new Promise((resolve, reject) => {
+    lane.queue.push({ work, resolve, reject });
+    drainModrinthLane(lane);
+  });
+}
+
 export function createModrinthApi(options = {}) {
   const client = options.client ?? httpClient;
   const validator = options.validator ?? validateUrl;
@@ -304,9 +324,32 @@ export function createModrinthApi(options = {}) {
     });
   }
 
-  async function getJson(url, { allowStatus = [] } = {}) {
-    return client.getJson(url, { source: 'modrinth', validator, allowStatus });
+  async function requestJson(method, url, body, { allowStatus = [], lane = 'updates' } = {}) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const res = await queueModrinthRequest(async () => {
+        const opts = { source: 'modrinth', validator, allowStatus: [...allowStatus, 429] };
+        const response = method === 'POST'
+          ? await client.postJson(url, body, opts)
+          : await client.getJson(url, opts);
+        if (response.status === 429) {
+          const retryAfter = Number(response.headers?.['retry-after']);
+          const reset = Number(response.headers?.['x-ratelimit-reset']);
+          const seconds = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter
+            : Number.isFinite(reset) && reset > 0 ? reset : 5;
+          modrinthBlockedUntil = Math.max(modrinthBlockedUntil, Date.now() + seconds * 1000);
+        }
+        return response;
+      }, lane);
+      if (res.status !== 429) return res;
+    }
+    throw new ValidationError('Modrinth is busy. Please try again shortly.', {
+      code: 'MODRINTH_RATE_LIMITED', status: 429,
+    });
   }
+  async function getJson(url, options = {}) {
+    return requestJson('GET', url, null, options);
+  }
+  const projects = new Map();
 
   async function search(query, options = {}) {
     if (typeof query !== 'string') {
@@ -359,16 +402,50 @@ export function createModrinthApi(options = {}) {
 
   async function getProject(idOrSlug) {
     const id = safeProjectRef(idOrSlug);
-    const res = await getJson(`${MODRINTH_API_BASE_URL}/project/${encodeURIComponent(id)}`, {
-      allowStatus: [404],
-    });
-    if (res.status === 404) {
-      throw new NotFoundError(`Modrinth project not found: ${id}`, {
-        code: 'MODRINTH_PROJECT_NOT_FOUND',
-        details: { id },
+    const cached = projects.get(id);
+    if (cached && cached.expires > Date.now()) return cached.promise;
+    const promise = (async () => {
+      const res = await getJson(`${MODRINTH_API_BASE_URL}/project/${encodeURIComponent(id)}`, {
+        allowStatus: [404], lane: 'artwork',
       });
+      if (res.status === 404) {
+        throw new NotFoundError(`Modrinth project not found: ${id}`, {
+          code: 'MODRINTH_PROJECT_NOT_FOUND', details: { id },
+        });
+      }
+      return normalizeProject(res.data);
+    })();
+    projects.set(id, { promise, expires: Date.now() + 5 * 60 * 1000 });
+    try {
+      return await promise;
+    } catch (err) {
+      if (projects.get(id)?.promise === promise) projects.delete(id);
+      throw err;
     }
-    return normalizeProject(res.data);
+  }
+
+  async function getProjects(projectIds) {
+    if (!Array.isArray(projectIds) || projectIds.length > 50) {
+      throw new ValidationError('Project IDs must be an array of at most 50 identifiers');
+    }
+    const ids = [...new Set(projectIds.map(safeProjectRef))];
+    const missing = ids.filter((id) => !(projects.get(id)?.expires > Date.now()));
+    const loaded = new Map();
+    if (missing.length) {
+      const query = new URLSearchParams({ ids: JSON.stringify(missing) });
+      const { data } = await getJson(`${MODRINTH_API_BASE_URL}/projects?${query}`, { lane: 'artwork' });
+      if (!Array.isArray(data)) throw responseInvalid('projects', 'Modrinth projects response is not an array');
+      for (const entry of data) {
+        const project = normalizeProject(entry);
+        loaded.set(project.id, project);
+        loaded.set(project.slug, project);
+        const cache = { promise: Promise.resolve(project), expires: Date.now() + 5 * 60 * 1000 };
+        projects.set(project.id, cache);
+        projects.set(project.slug, cache);
+      }
+    }
+    const result = await Promise.all(ids.map((id) => loaded.get(id) ?? projects.get(id)?.promise ?? null));
+    return result.filter(Boolean);
   }
 
   async function listVersions(idOrSlug, filters = {}) {
@@ -383,6 +460,9 @@ export function createModrinthApi(options = {}) {
     if (gameVersions) params.set('game_versions', JSON.stringify(gameVersions));
     if (loaders) params.set('loaders', JSON.stringify(loaders));
     if (limit !== null) params.set('limit', String(limit));
+    // Update checks only need version metadata and file hashes. Omitting every
+    // changelog keeps large projects' version responses substantially smaller.
+    params.set('include_changelog', 'false');
     const query = params.toString();
     const url = `${MODRINTH_API_BASE_URL}/project/${encodeURIComponent(id)}/version${query ? `?${query}` : ''}`;
 
@@ -441,8 +521,8 @@ export function createModrinthApi(options = {}) {
       normalized.push(hash.toLowerCase());
     }
 
-    const res = await client.postJson(
-      `${MODRINTH_API_BASE_URL}/version_files`,
+    const res = await requestJson(
+      'POST', `${MODRINTH_API_BASE_URL}/version_files`,
       { hashes: [...new Set(normalized)], algorithm },
       { source: 'modrinth', validator, allowStatus: [404] },
     );
@@ -499,6 +579,7 @@ export function createModrinthApi(options = {}) {
   return {
     search,
     getProject,
+    getProjects,
     listVersions,
     getVersion,
     getVersionFiles,

@@ -1,6 +1,5 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -531,6 +530,7 @@ test('check honors a minecraftVersion override and reports incompatible and unav
     versionNumber: '0.9.0',
   };
   const newerVersion = makeVersion('SODIUM_NEW', 'PRJSODIUM', [{ ...sodiumFile }]);
+  newerVersion.gameVersions = ['1.19.4', '1.20.1'];
 
   // (1) preview: listVersions must filter on the candidate, and the instance must keep its stored version
   const overrideApi = createCheckableModrinth({
@@ -702,7 +702,7 @@ test('pack installs record kind, pack checks skip loader filters and remove forg
   assert.deepEqual(checked.adopted, []);
   assert.equal(checked.files[0].status, 'checked');
   assert.equal(checked.updateCount, 1);
-  assert.deepEqual(modrinth.listVersionCalls[0].options, {}, 'packs must not filter by loader or game version');
+  assert.deepEqual(modrinth.listVersionCalls[0].options, { gameVersions: ['1.20.1'] }, 'packs filter by game tag but not loader');
 
   packList.splice(0, packList.length, packV1);
   const upToDate = await modInstaller.check(meta.id, { kind: 'resourcepacks' });
@@ -723,9 +723,7 @@ test('pack installs record kind, pack checks skip loader filters and remove forg
   assert.equal(modsCheck.checked, 0, 'packs never appear in the mods check');
 });
 
-test('pack checks stay ready when Modrinth omits Minecraft tags and always take the newest version', async () => {
-  // Regression: Modrinth rarely tags resource packs with the instance MC (e.g. 26.2) — an
-  // untagged pack still works in-game, so it must come back 'checked', never 'incompatible'.
+test('resourcepack checks only compare versions tagged for the instance Minecraft version', async () => {
   const packFile = {
     filename: 'pack.zip',
     url: `${baseUrl}/files/shared-a.jar`,
@@ -734,49 +732,73 @@ test('pack checks stay ready when Modrinth omits Minecraft tags and always take 
     sha1: sodiumBytesHashes.sha1,
     sha512: sodiumBytesHashes.sha512,
   };
-  const untaggedOld = {
+  const taggedOld = {
     ...makeVersion('UNTAG_OLD', 'PRJUNTAG', [packFile]),
-    gameVersions: ['1.21.4'],
+    gameVersions: ['26.2'],
     versionNumber: '1.0.0',
   };
-  const untaggedNew = {
+  const taggedNew = {
     ...makeVersion('UNTAG_NEW', 'PRJUNTAG', []),
-    gameVersions: ['1.21.4'],
-    versionNumber: '2.0.0',
-  };
-  const taggedInstalled = {
-    ...makeVersion('UNTAG_TAGGED', 'PRJUNTAG', [packFile]),
     gameVersions: ['26.2'],
-    versionNumber: '1.5.0',
+    versionNumber: '2.0.0',
+    datePublished: '2026-02-01T00:00:00Z',
   };
-  const untaggedList = [untaggedNew, untaggedOld];
+  const wrongGameLatest = {
+    ...makeVersion('UNTAG_WRONG_GAME', 'PRJUNTAG', []),
+    gameVersions: ['26.3'],
+    versionNumber: '9.0.0',
+    datePublished: '2026-03-01T00:00:00Z',
+  };
+  taggedOld.datePublished = '2026-01-01T00:00:00Z';
+  // Deliberately put a newer wrong-game version first; it must be excluded.
+  const versionList = [wrongGameLatest, taggedOld, taggedNew];
   const modrinth = createCheckableModrinth({
-    versions: { UNTAG_OLD: untaggedOld, UNTAG_NEW: untaggedNew, UNTAG_TAGGED: taggedInstalled },
-    versionLists: { PRJUNTAG: untaggedList },
+    versions: { UNTAG_OLD: taggedOld, UNTAG_NEW: taggedNew, UNTAG_WRONG_GAME: wrongGameLatest },
+    versionLists: { PRJUNTAG: versionList },
   });
   const { manager, modInstaller } = setup({ modrinth });
   const meta = await manager.create({ name: 'UntaggedPack', minecraftVersion: '26.2', fabricLoaderVersion: '0.19.5' });
 
   await modInstaller.install(meta.id, 'UNTAG_OLD', { kind: 'resourcepacks' });
   const checked = await modInstaller.check(meta.id, { kind: 'resourcepacks' });
-  assert.equal(checked.files[0].status, 'checked', 'untagged pack must not report incompatible');
-  assert.equal(checked.files[0].updateAvailable, true, 'newest overall version is offered when nothing is tagged');
+  assert.equal(checked.files[0].status, 'checked');
+  assert.equal(checked.files[0].updateAvailable, true);
   assert.equal(checked.files[0].latest.versionNumber, '2.0.0');
-  assert.deepEqual(modrinth.listVersionCalls[0].options, {}, 'pack lookups must not filter by game version');
+  assert.deepEqual(modrinth.listVersionCalls[0].options, { gameVersions: ['26.2'] });
 
-  // Packs ignore Minecraft tags entirely — newest overall wins even when the installed version is tagged
-  // (mutate in place: the versions cache holds this same array reference)
-  const meta2 = await manager.create({ name: 'TaggedPack', minecraftVersion: '26.2', fabricLoaderVersion: '0.19.5' });
-  await modInstaller.install(meta2.id, 'UNTAG_TAGGED', { kind: 'resourcepacks' });
-  untaggedList.splice(0, untaggedList.length, untaggedNew, taggedInstalled);
-  const newest = await modInstaller.check(meta2.id, { kind: 'resourcepacks' });
-  assert.equal(newest.files[0].status, 'checked');
-  assert.equal(
-    newest.files[0].updateAvailable,
-    true,
-    'packs take the newest version regardless of game-version tags',
-  );
-  assert.equal(newest.files[0].latest.versionNumber, '2.0.0');
+  const meta2 = await manager.create({ name: 'NoMatchingPack', minecraftVersion: '26.4', fabricLoaderVersion: '0.19.5' });
+  await modInstaller.install(meta2.id, 'UNTAG_OLD', { kind: 'resourcepacks' });
+  const unsupported = await modInstaller.check(meta2.id, { kind: 'resourcepacks' });
+  assert.equal(unsupported.files[0].status, 'incompatible', 'no version tagged for the selected game is not offered');
+  assert.deepEqual(modrinth.listVersionCalls[1].options, { gameVersions: ['26.4'] });
+});
+
+test('shaderpack checks use Modrinth latest-version data and report available updates', async () => {
+  const shaderFile = {
+    filename: 'shader.zip',
+    url: `${baseUrl}/files/shared-a.jar`,
+    primary: true,
+    size: sodiumBytes.length,
+    sha1: sodiumBytesHashes.sha1,
+    sha512: sodiumBytesHashes.sha512,
+  };
+  const installed = { ...makeVersion('SHADER_OLD', 'PRJSHADER', [shaderFile]), gameVersions: ['26.2'], versionNumber: '1.0.0' };
+  const latest = { ...makeVersion('SHADER_NEW', 'PRJSHADER', []), gameVersions: ['26.2'], versionNumber: '2.0.0' };
+  const wrongGame = { ...makeVersion('SHADER_WRONG', 'PRJSHADER', []), gameVersions: ['26.3'], versionNumber: '9.0.0' };
+  const modrinth = createCheckableModrinth({
+    versions: { SHADER_OLD: installed, SHADER_NEW: latest, SHADER_WRONG: wrongGame },
+    versionLists: { PRJSHADER: [wrongGame, latest, installed] },
+  });
+  const { manager, modInstaller } = setup({ modrinth });
+  const meta = await manager.create({ name: 'ShaderCheck', minecraftVersion: '26.2', fabricLoaderVersion: '0.20.1' });
+
+  await modInstaller.install(meta.id, 'SHADER_OLD', { kind: 'shaderpacks' });
+  const checked = await modInstaller.check(meta.id, { kind: 'shaderpacks' });
+  assert.equal(checked.kind, 'shaderpacks');
+  assert.equal(checked.checked, 1);
+  assert.equal(checked.updateCount, 1);
+  assert.equal(checked.files[0].latest.versionId, 'SHADER_NEW');
+  assert.deepEqual(modrinth.listVersionCalls[0].options, { gameVersions: ['26.2'] });
 });
 
 test('live: installs fabric-api into a real instance with hash verification', { skip: !process.env.TML_LIVE }, async () => {

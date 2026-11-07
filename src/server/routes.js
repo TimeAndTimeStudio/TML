@@ -1,14 +1,14 @@
 // Owner: Time And Time Studio
 // Date: 2026-10-01 19:50 +0700
-// License: GPL-3.0-or-later
 
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { AuthError, InstanceError, JavaRuntimeError, NotFoundError, ValidationError } from '../core/errors.js';
+import { JavaRuntimeError, NotFoundError, ValidationError } from '../core/errors.js';
 import { ensureDir, pathExists, readJson, removePath, writeJson } from '../core/filesystem.js';
 import { createRouter } from './router.js';
 import {
@@ -22,15 +22,12 @@ import { listSources } from '../security/urls.js';
 import { validateRuntimeName } from '../java/runtimes.js';
 import { safeVersionId } from '../minecraft/versions.js';
 import { createMinecraftApi } from '../minecraft/api.js';
-import { createSkinService, SKIN_DEFAULT_VARIANT } from '../minecraft/skin.js';
 
 const startedAt = Date.now();
 
 const IMPORT_UPLOAD_LIMIT_BYTES = 256 * 1024 * 1024;
 const STAGING_MAX_AGE_MS = 60 * 60 * 1000;
 const STAGED_TOKEN_RE = /^[a-f0-9]{32}$/;
-const AUTH_WAIT_TIMEOUT_MS = 4 * 60 * 1000;
-const AUTH_DEVICE_MAX = 32;
 const SEARCH_DEFAULT_LIMIT = 12;
 const VERSIONS_DEFAULT_LIMIT = 20;
 // ไม่กรอง game/loader (เช่น browse resource pack ทุกเวอร์ชี) → คืนให้ครบเท่าที่ Modrinth ให้ (สูงสุด 100)
@@ -166,214 +163,20 @@ async function stageImportPath(sourcePath, stagingDir, logger) {
   return staged;
 }
 
-function registerAuthRoutes(router, config, logger, auth, store) {
-  const deviceLogins = new Map();
-
-  function rememberStart(start) {
-    if (deviceLogins.size >= AUTH_DEVICE_MAX) {
-      deviceLogins.delete(deviceLogins.keys().next().value);
-    }
-    deviceLogins.set(start.deviceCode, start);
-  }
-
-  router.post('/api/auth/device', async () => {
-    const client = auth.requireClient();
-    const start = await client.startDeviceLogin();
-    rememberStart(start);
-    return {
-      body: {
-        deviceCode: start.deviceCode,
-        userCode: start.userCode,
-        verificationUri: start.verificationUri,
-        verificationUriComplete: start.verificationUriComplete,
-        interval: start.interval,
-        expiresIn: start.expiresIn,
-        expiresAt: start.expiresAt,
-        message: start.message,
-      },
-    };
-  });
-
-  router.post('/api/auth/login', async ({ body }) => {
-    const deviceCode = typeof body?.deviceCode === 'string' ? body.deviceCode : '';
-    if (deviceCode === '') {
-      throw new ValidationError('Field "deviceCode" must be a non-empty string', {
-        details: { field: 'deviceCode' },
-      });
-    }
-
-    const start = deviceLogins.get(deviceCode);
-    if (!start) {
-      throw new NotFoundError('Unknown or expired device login, start again', {
-        code: 'AUTH_DEVICE_UNKNOWN',
-        status: 404,
-        details: { stage: 'device' },
-      });
-    }
-    if (Number.isFinite(start.expiresAt) && Date.now() >= start.expiresAt) {
-      deviceLogins.delete(deviceCode);
-      throw new AuthError('The device login code has expired', {
-        code: 'AUTH_DEVICE_EXPIRED',
-        status: 400,
-        details: { stage: 'device' },
-      });
-    }
-
-    const client = auth.requireClient();
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), AUTH_WAIT_TIMEOUT_MS);
-    timer.unref?.();
-    try {
-      const session = await client.completeDeviceLogin(start, { signal: controller.signal });
-      deviceLogins.delete(deviceCode);
-      const saved = await store.save(session);
-      logger.info('microsoft sign-in complete', { username: saved.username, uuid: saved.uuid });
-      return { body: { session: saved } };
-    } catch (err) {
-      if (controller.signal.aborted) {
-        throw new AuthError('Still waiting for sign-in, retry with the same device code', {
-          code: 'AUTH_WAIT_TIMEOUT',
-          status: 400,
-          details: { stage: 'device' },
-        });
-      }
-      if (err?.code === 'AUTH_DECLINED' || err?.code === 'AUTH_DEVICE_EXPIRED') {
-        deviceLogins.delete(deviceCode);
-      }
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
-  });
-
-  router.get('/api/auth/session', async () => {
-    const clientConfigured = auth.isConfigured();
-    const session = await store.read();
-    if (!session) return { body: { signedIn: false, clientConfigured } };
-    return {
-      body: {
-        ...store.publicSession(session),
-        clientConfigured,
-      },
-    };
-  });
-
-  router.delete('/api/auth/session', async () => {
-    await store.clear();
-    return { body: { signedIn: false } };
-  });
-}
-
-// เปลี่ยน skin ผ่าน Minecraft Services API — ใช้ accessToken ของ session ที่ล็อกอินไว้ (หมดอายุ → token-store ลบ session ให้เอง)
-function registerSkinRoutes(router, config, logger, account, skin) {
-  async function accessToken() {
-    const stored = await account.read();
-    if (!stored) {
-      throw new AuthError('Sign in with a Microsoft account to change your skin', {
-        code: 'AUTH_NO_SESSION',
-        status: 401,
-        details: { stage: 'config' },
-      });
-    }
-    return stored.accessToken;
-  }
-
-  router.post('/api/minecraft/skin', async ({ body }) => {
-    const payload = isPlainObject(body) ? body : {};
-    if (typeof payload.data !== 'string' || payload.data === '') {
-      throw new ValidationError('Field "data" must be a base64-encoded PNG skin image', {
-        code: 'INVALID_SKIN',
-        details: { field: 'data' },
-      });
-    }
-    const variant =
-      payload.variant === undefined || payload.variant === null
-        ? SKIN_DEFAULT_VARIANT
-        : payload.variant;
-    const token = await accessToken();
-    await skin.upload({
-      token,
-      data: Buffer.from(payload.data, 'base64'),
-      variant,
-      filename: typeof payload.filename === 'string' ? payload.filename : 'skin.png',
-    });
-    logger.info('skin changed', { variant });
-    return { body: { changed: true, variant } };
-  });
-
-  router.delete('/api/minecraft/skin', async () => {
-    const token = await accessToken();
-    await skin.reset({ token });
-    logger.info('skin reset to default', {});
-    return { body: { changed: true } };
-  });
-
-  // skin ที่ใช้อยู่ตอนนี้ (สำหรับหน้าต่างสกิน — แสดงของที่ใช้อยู่ + เปลี่ยนได้)
-  router.get('/api/minecraft/skin', async () => {
-    const token = await accessToken();
-    const profile = await skin.active({ token });
-    return { body: profile };
-  });
-
-  // รูปสกินสำหรับ preview — อ่านจาก cache บนเครื่องเท่านั้น (ไฟล์ที่เกมเขียน + ไฟล์ที่อัปโหลดไว้) ไม่ยิงออกไปโหลดจากเน็ต
-  router.get('/api/minecraft/skin/image', async ({ query }) => {
-    const hash = String(query.get('hash') ?? '');
-    if (hash !== '' && !/^[a-f0-9]{40}$|^[a-f0-9]{64}$/.test(hash)) {
-      throw new ValidationError('A skin hash must be 40 or 64 lowercase hex characters', {
-        code: 'INVALID_SKIN_HASH',
-        details: { field: 'hash' },
-      });
-    }
-    await accessToken(); // ต้อง sign in (ตรวจจาก session ฝั่ง server — รูปโหลดผ่าน URL จึงไม่ต้องส่ง token ทาง client)
-    const texture = await skin.texture({ hash: hash === '' ? null : hash });
-    return {
-      body: {
-        hash: texture.hash,
-        source: texture.source,
-        dataUrl: `data:image/png;base64,${texture.data.toString('base64')}`,
-      },
-    };
-  });
-}
-
-function registerInstanceRoutes(router, config, logger, instance, session = null, getConfig = () => config, java = null) {
-  const { manager, exporter = null, importer = null, installer = null, gameserver = null } = instance;
+function registerInstanceRoutes(router, config, logger, instance, getConfig = () => config, java = null) {
+  const { manager, exporter = null, importer = null, installer = null } = instance;
   const stagingDir = path.join(config.paths.tmpDir, 'import-staging');
   // สถานะล่าสุดของ POST /check ต่อ instance+kind ให้ UI poll ระหว่างที่คำนวณยังไม่จบ (คล้าย launch-progress)
   const checkProgress = new Map();
 
-  async function launchAuth() {
-    if (!session || !session.auth || !session.store) return undefined;
-    const stored = await session.store.read();
-    if (!stored) return undefined;
-    if (typeof session.auth.isConfigured === 'function' && !session.auth.isConfigured()) return undefined;
-    return {
-      username: stored.username,
-      uuid: stored.uuid,
-      accessToken: stored.accessToken,
-      userType: stored.userType ?? 'msa',
-      xuid: stored.xuid ?? undefined,
-    };
-  }
-
-  // ไม่มี Microsoft session → ใช้ชื่อ offline ที่ตั้งไว้ใน config (ถ้ามี) ไม่งั้น default ของ launcher
+  // ชื่อผู้เล่น = offline name ที่ตั้งไว้ใน Settings (ไม่มี login ในระบบแล้ว)
   function offlineAuth() {
     const name = getConfig().auth?.offlineName;
     return typeof name === 'string' && name !== '' ? { username: name } : undefined;
   }
 
   async function shape(meta) {
-    const isServer = meta.type === 'server';
-    let status;
-    let installed = null;
-    if (isServer) {
-      // server รันคนละ map กับ client (gameserver) — ไม่งั้น status จะฟ้อง stopped ตลอด
-      status = gameserver ? await gameserver.status(meta.id) : { running: false, pid: null, sessionSeconds: 0 };
-      installed = gameserver ? status.installed : null;
-    } else {
-      status = manager.status(meta.id);
-    }
+    const status = manager.status(meta.id);
     let mods = null;
     if (installer && typeof installer.list === 'function') {
       try {
@@ -394,10 +197,9 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
       java: meta.java,
       memory: meta.memory,
       extraJvmArgs: meta.extraJvmArgs ?? [],
+      extraJvmArgsConfigured: meta.extraJvmArgsConfigured === true,
       extraGameArgs: meta.extraGameArgs ?? [],
-      port: meta.port ?? 25565,
-      eulaAccepted: meta.eulaAccepted === true,
-      installed,
+      installed: null,
       running: status.running,
       pid: status.pid,
       sessionSeconds: status.sessionSeconds,
@@ -408,35 +210,10 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
     };
   }
 
-  // server routes เฉพาะทาง — instance ที่เป็น client เรียกมาต้องโดนปฏิเสธชัดเจน
-  async function serverMeta(id) {
-    const meta = await manager.get(id);
-    if (meta.type !== 'server') {
-      throw new ValidationError('This instance is a game client — manage it from Instances', {
-        code: 'NOT_SERVER_INSTANCE',
-        status: 400,
-        details: { id, type: meta.type },
-      });
-    }
-    return meta;
-  }
-
-  function requireGameserver() {
-    if (!gameserver) {
-      throw new NotFoundError('Server management is not available', {
-        code: 'GAME_SERVER_UNAVAILABLE',
-        details: { id: null },
-      });
-    }
-    return gameserver;
-  }
-
   router.get('/api/instances', async () => {
     const metas = await manager.list();
     const instances = [];
-    // list นี้ = client อย่างเดียว — server แยกขึ้น /api/servers
     for (const meta of metas) {
-      if (meta.type === 'server') continue;
       instances.push(await shape(meta));
     }
     return { body: { count: instances.length, instances } };
@@ -457,35 +234,9 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
     return { status: 201, body: { instance: await shape(meta) } };
   });
 
-  router.get('/api/servers', async () => {
-    const metas = await manager.list();
-    const servers = [];
-    for (const meta of metas) {
-      if (meta.type !== 'server') continue;
-      servers.push(await shape(meta));
-    }
-    return { body: { count: servers.length, servers } };
-  });
-
-  router.post('/api/servers', async ({ body }) => {
-    const meta = await manager.create({
-      id: body?.id ?? undefined,
-      name: body?.name,
-      type: 'server',
-      minecraftVersion: body?.minecraftVersion,
-      loader: body?.loader ?? undefined,
-      fabricLoaderVersion: body?.fabricLoaderVersion,
-      java: body?.java ?? undefined,
-      memory: body?.memory ?? undefined,
-      extraJvmArgs: body?.extraJvmArgs ?? undefined,
-      port: body?.port ?? undefined,
-    });
-    return { status: 201, body: { server: await shape(meta) } };
-  });
-
   if (importer) {
-    // expectedType = 'client' | 'server' — archive ผิดชนิดถูกปฏิเสธตั้งแต่ preview
-    const importHandler = (expectedType) => async ({ req, body, query, upload }) => {
+    // archive ผิดชนิดถูกปฏิเสธตั้งแต่ preview (expectedType = 'client' เสมอ)
+    const importHandler = async ({ req, body, query, upload }) => {
       if (upload) {
         await ensureDir(stagingDir);
         await sweepStaging(stagingDir, logger);
@@ -495,7 +246,7 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
 
         let manifest;
         try {
-          ({ manifest } = await importer.inspect(staged, { expectedType }));
+          ({ manifest } = await importer.inspect(staged));
         } catch (err) {
           await removePath(staged).catch(() => {});
           throw err;
@@ -522,7 +273,7 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
         const staged = await stageImportPath(body.path, stagingDir, logger);
         let manifest;
         try {
-          ({ manifest } = await importer.inspect(staged, { expectedType }));
+          ({ manifest } = await importer.inspect(staged));
         } catch (err) {
           await removePath(staged).catch(() => {});
           throw err;
@@ -546,7 +297,7 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
       }
 
       try {
-        const result = await importer.import(staged, { name: body?.name, id: body?.id, expectedType });
+        const result = await importer.import(staged, { name: body?.name, id: body?.id });
         return {
           status: 201,
           body: {
@@ -562,13 +313,48 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
       }
     };
 
-    router.post('/api/instances/import', importHandler('client'));
-    router.post('/api/servers/import', importHandler('server'));
+    router.post('/api/instances/import', importHandler);
   }
 
   router.get('/api/instances/:id', async ({ params }) => {
     const meta = await manager.get(params.id);
     return { body: { instance: await shape(meta) } };
+  });
+
+  router.get('/api/instances/:id/console', async ({ params, query }) => {
+    if (typeof manager.readConsole !== 'function') {
+      throw new NotFoundError(`Instance console is not available: ${params.id}`, {
+        code: 'INSTANCE_CONSOLE_UNAVAILABLE', details: { id: params.id },
+      });
+    }
+    const since = Number.parseInt(String(query.get('since') ?? '0'), 10);
+    const generation = Number.parseInt(String(query.get('generation') ?? ''), 10);
+    return {
+      body: manager.readConsole(
+        params.id,
+        Number.isFinite(since) ? since : 0,
+        Number.isFinite(generation) ? generation : null,
+      ),
+    };
+  });
+
+  router.get('/api/instances/:id/default-jvm-args', async ({ params }) => {
+    if (typeof manager.getDefaultJvmArgs !== 'function') return { body: { args: [] } };
+    return { body: { args: await manager.getDefaultJvmArgs(params.id) } };
+  });
+
+  router.post('/api/instances/:id/open-folder', async ({ params }) => {
+    await manager.get(params.id);
+    const directory = manager.paths(params.id).dir;
+    await new Promise((resolve, reject) => {
+      const opener = spawn('explorer.exe', [directory], { detached: true, stdio: 'ignore' });
+      opener.once('error', reject);
+      opener.once('spawn', () => {
+        opener.unref();
+        resolve();
+      });
+    });
+    return { body: { opened: true } };
   });
 
   router.patch('/api/instances/:id', async ({ params, body }) => {
@@ -577,13 +363,6 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
   });
 
   router.delete('/api/instances/:id', async ({ params }) => {
-    if (gameserver?.isRunning(params.id)) {
-      throw new InstanceError(`Server is running: ${params.id}`, {
-        code: 'INSTANCE_RUNNING',
-        status: 409,
-        details: { id: params.id },
-      });
-    }
     const result = await manager.delete(params.id);
     return { body: { ...result, instanceId: result.id } };
   });
@@ -663,68 +442,12 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
     return { body: { id: params.id, icon: false, removed } };
   });
 
-  // ---------- Servers (Fabric server ในตัว — ชนิดเดียวกับ client จัดการคนละทาง) ----------
-
-  router.get('/api/servers/:id', async ({ params }) => {
-    const meta = await serverMeta(params.id);
-    return { body: { server: await shape(meta) } };
-  });
-
-  router.get('/api/servers/:id/status', async ({ params }) => {
-    await serverMeta(params.id);
-    return { body: await requireGameserver().status(params.id) };
-  });
-
-  router.get('/api/servers/:id/console', async ({ params, query }) => {
-    await serverMeta(params.id);
-    const since = Number.parseInt(String(query.get('since') ?? '0'), 10);
-    return { body: requireGameserver().readConsole(params.id, Number.isFinite(since) ? since : 0) };
-  });
-
-  router.post('/api/servers/:id/install', async ({ params, body }) => {
-    await serverMeta(params.id);
-    const result = await requireGameserver().install(params.id, { force: body?.force === true });
-    return { status: 202, body: { instanceId: result.id, installed: true, skipped: result.skipped === true } };
-  });
-
-  // START = ยังไม่มีไฟล์ก็ลงให้เอง (แบบเดียวกับ PLAY ของ client ที่ลงเกมก่อน)
-  router.post('/api/servers/:id/start', async ({ params }) => {
-    await serverMeta(params.id);
-    const result = await requireGameserver().start(params.id);
-    return {
-      status: 202,
-      body: { instanceId: result.id, running: true, pid: result.pid, port: result.port, installed: result.installed },
-    };
-  });
-
-  router.post('/api/servers/:id/stop', async ({ params }) => {
-    await serverMeta(params.id);
-    const result = await requireGameserver().stop(params.id);
-    return {
-      body: { instanceId: result.id, running: false, code: result.code ?? null, signal: result.signal ?? null },
-    };
-  });
-
-  router.post('/api/servers/:id/eula', async ({ params, body }) => {
-    await serverMeta(params.id);
-    const accept = isPlainObject(body) && body.accept === true;
-    const result = await requireGameserver().setEula(params.id, accept);
-    return { body: { instanceId: result.id, eulaAccepted: result.eulaAccepted } };
-  });
-
   router.post('/api/instances/:id/launch', async ({ params }) => {
     // มีอยู่จริงค่อยตรวจชนิด (instance ไม่มีจริงต้องยังคืน 404 ตามเดิม — java gate มาก่อน)
     const existing = await manager.get(params.id).catch((err) => {
       if (err?.code === 'INSTANCE_NOT_FOUND') return null;
       throw err;
     });
-    if (existing?.type === 'server') {
-      throw new InstanceError('This is a server — press START from its server page instead', {
-        code: 'SERVER_INSTANCE',
-        status: 409,
-        details: { id: params.id },
-      });
-    }
     // PLAY ใช้ได้เฉพาะเมื่อผู้ใช้เลือก runtime ที่ดาวน์โหลดมาแล้วไว้เท่านั้น
     if (java) {
       const chosen = typeof java.getChosen === 'function' ? java.getChosen() : null;
@@ -741,7 +464,7 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
         );
       }
     }
-    const auth = (await launchAuth()) ?? offlineAuth();
+    const auth = offlineAuth();
     const result = await manager.launch(params.id, {
       ...(auth ? { auth } : {}),
     });
@@ -758,17 +481,6 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
   });
 
   router.post('/api/instances/:id/stop', async ({ params }) => {
-    const existing = await manager.get(params.id).catch((err) => {
-      if (err?.code === 'INSTANCE_NOT_FOUND') return null;
-      throw err;
-    });
-    if (existing?.type === 'server') {
-      throw new InstanceError('This is a server — use STOP from its server page instead', {
-        code: 'SERVER_INSTANCE',
-        status: 409,
-        details: { id: params.id },
-      });
-    }
     const result = await manager.stop(params.id);
     return {
       body: {
@@ -782,13 +494,6 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
 
   if (exporter) {
     router.post('/api/instances/:id/export', async ({ params, body }) => {
-      if (gameserver?.isRunning(params.id)) {
-        throw new InstanceError(`Server is running: ${params.id}`, {
-          code: 'INSTANCE_RUNNING',
-          status: 409,
-          details: { id: params.id },
-        });
-      }
       const result = await exporter.export(params.id, {
         name: body?.name ?? undefined,
         path: body?.path ?? undefined,
@@ -817,7 +522,7 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
         body: {
           instanceId: params.id,
           count: mods.length,
-          mods: mods.map((mod) => ({ filename: mod.filename, size: mod.size })),
+          mods: mods.map((mod) => ({ filename: mod.filename, size: mod.size, ...(mod.projectId ? { projectId: mod.projectId } : {}) })),
         },
       };
     });
@@ -867,7 +572,7 @@ function registerInstanceRoutes(router, config, logger, instance, session = null
           instanceId: params.id,
           kind,
           count: packs.length,
-          packs: packs.map((pack) => ({ filename: pack.filename, size: pack.size })),
+          packs: packs.map((pack) => ({ filename: pack.filename, size: pack.size, ...(pack.projectId ? { projectId: pack.projectId } : {}) })),
         },
       };
     });
@@ -1056,16 +761,12 @@ export function createApiRouter({
   logger,
   minecraft = null,
   instance = null,
-  auth = null,
-  account = null,
   modrinth = null,
   fabric = null,
   java = null,
-  skin = null,
 }) {
   const router = createRouter();
   const mc = minecraft ?? createMinecraftApi({ config, logger });
-  const skinApi = skin ?? createSkinService({ config, logger });
   let liveConfig = config;
 
   async function saveJavaRuntime(name) {
@@ -1074,21 +775,8 @@ export function createApiRouter({
     await writeJson(config.paths.configFile, { ...base, java: name });
   }
 
-  if ((auth && !account) || (!auth && account)) {
-    throw new ValidationError('Auth API requires both an auth client and a token store', {
-      code: 'INVALID_AUTH_CONFIG',
-    });
-  }
-  if (auth && account) {
-    registerAuthRoutes(router, config, logger, auth, account);
-    registerSkinRoutes(router, config, logger, account, skinApi);
-  }
-
   if (instance && instance.manager) {
-    registerInstanceRoutes(router, config, logger, instance, {
-      auth: auth ?? null,
-      store: account ?? null,
-    }, () => liveConfig, java);
+    registerInstanceRoutes(router, config, logger, instance, () => liveConfig, java);
   } else if (instance) {
     throw new ValidationError('Instance API requires an instance manager', { code: 'INVALID_INSTANCE_MANAGER' });
   }
@@ -1103,8 +791,8 @@ export function createApiRouter({
       const indexRaw = query.get('index');
       const index = indexRaw !== null && indexRaw !== '' ? indexRaw : q.trim() === '' ? 'downloads' : 'relevance';
       const typeRaw = query.get('type');
+      const gameRaw = query.get('game');
       const SEARCH_PROJECT_TYPES = ['mod', 'resourcepack', 'shader'];
-      let facets;
       if (typeRaw !== null && typeRaw !== '') {
         if (!SEARCH_PROJECT_TYPES.includes(typeRaw)) {
           throw new ValidationError(`Field "type" must be one of: ${SEARCH_PROJECT_TYPES.join(', ')}`, {
@@ -1112,16 +800,25 @@ export function createApiRouter({
             details: { field: 'type', known: SEARCH_PROJECT_TYPES },
           });
         }
-        facets = [[`project_type:${typeRaw}`]];
+      }
+      if (gameRaw !== null && gameRaw !== '' && !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,39}$/.test(gameRaw)) {
+        throw new ValidationError('Field "game" must be a valid Minecraft version tag', {
+          code: 'INVALID_GAME_VERSION', details: { field: 'game' },
+        });
       }
 
+      const facets = [];
+      if (typeRaw) facets.push([`project_type:${typeRaw}`]);
+      if (gameRaw) facets.push([`versions:${gameRaw}`]);
+
       const searchOptions = { limit, offset, index };
-      if (facets) searchOptions.facets = facets;
+      if (facets.length) searchOptions.facets = facets;
       const result = await modrinth.search(q, searchOptions);
       return {
         body: {
           query: q,
           type: typeRaw !== null && typeRaw !== '' ? typeRaw : null,
+          gameVersion: gameRaw || null,
           total: result.totalHits,
           offset: result.offset,
           limit: result.limit,
@@ -1135,6 +832,8 @@ export function createApiRouter({
             downloads: hit.downloads,
             iconUrl: hit.iconUrl,
             categories: hit.categories,
+            clientSide: hit.clientSide,
+            serverSide: hit.serverSide,
             gameVersions: hit.gameVersions,
             latestVersionId: hit.latestVersionId,
           })),
@@ -1142,18 +841,33 @@ export function createApiRouter({
       };
     });
 
+    router.post('/api/modrinth/projects', async ({ body }) => {
+      if (!Array.isArray(body?.ids) || body.ids.length > 50
+          || body.ids.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(id))) {
+        throw new ValidationError('Project IDs must be an array of at most 50 safe identifiers');
+      }
+      const projects = await modrinth.getProjects(body.ids);
+      return { body: { projects: projects.map((project) => ({
+        projectId: project.projectId ?? project.id,
+        slug: project.slug, title: project.title, iconUrl: project.iconUrl,
+        clientSide: project.clientSide, serverSide: project.serverSide,
+      })) } };
+    });
+
     router.get('/api/modrinth/project/:id', async ({ params }) => {
       const project = await modrinth.getProject(params.id);
       return {
         body: {
           project: {
-            projectId: project.projectId,
+            projectId: project.projectId ?? project.id,
             slug: project.slug,
             title: project.title,
             description: project.description,
             downloads: project.downloads,
             iconUrl: project.iconUrl,
             categories: project.categories,
+            clientSide: project.clientSide,
+            serverSide: project.serverSide,
             gameVersions: project.gameVersions ?? [],
             loaders: project.loaders ?? [],
           },
@@ -1321,7 +1035,6 @@ export function createApiRouter({
 
   router.get('/api/config', () => {
     const body = publicConfig(liveConfig);
-    if (auth) body.auth = { ...body.auth, configured: auth.isConfigured(), source: auth.source };
     return { body };
   });
 
@@ -1529,7 +1242,6 @@ export function createApiRouter({
     }
 
     const view = publicConfig(liveConfig);
-    if (auth) view.auth = { ...view.auth, configured: auth.isConfigured(), source: auth.source };
     return { body: { saved, changed: changedFields, restartRequired, config: view } };
   });
 
